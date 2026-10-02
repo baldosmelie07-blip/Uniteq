@@ -2020,15 +2020,7 @@ export default function Receipts() {
                                         <option value="Cash">
                                             Cash
                                         </option>
-
-                                        <option value="Bank Transfer">
-                                            Bank Transfer
-                                        </option>
-
-                                        <option value="Online Payment">
-                                            Online Payment
-                                        </option>
-
+                                                                       
                                         <option value="Check">
                                             Check
                                         </option>

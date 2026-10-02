@@ -2077,21 +2077,22 @@ export default function Dashboard() {
 
                 <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
 
-                    <div>
-
-                        <h2 className="font-bold text-gray-900">
-
-                            Recent Transactions
-
-                        </h2>
-
-
-                        <p className="text-xs text-gray-500 mt-1">
-
-                            Latest official receipts
-
-                        </p>
-
+                    <div className="flex items-center gap-3">
+                        <div>
+                            <h2 className="font-bold text-gray-900">
+                                Recent Transactions
+                            </h2>
+                            <p className="text-xs text-gray-500 mt-1">
+                                Latest official receipts
+                            </p>
+                        </div>
+                        <Link
+                            to="/audit-trail"
+                            className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition"
+                        >
+                            <ShieldCheck size={14} />
+                            Full Audit Trail
+                        </Link>
                     </div>
 
 

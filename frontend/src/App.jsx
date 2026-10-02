@@ -10,6 +10,7 @@ import Vouchers from "./pages/Vouchers";
 import Reports from "./pages/Reports";
 import PendingBalances from "./pages/PendingBalances";
 import Users from "./pages/Users";
+import AuditTrail from "./pages/AuditTrail";
 
 export default function App() {
     return (
@@ -64,6 +65,11 @@ export default function App() {
                     <Route
                         path="/users"
                         element={<Users />}
+                    />
+
+                    <Route
+                        path="/audit-trail"
+                        element={<AuditTrail />}
                     />
 
                 </Route>

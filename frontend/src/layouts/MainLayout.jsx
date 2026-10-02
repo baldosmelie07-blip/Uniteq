@@ -9,6 +9,7 @@ import {
     FileCheck,
     FileText,
     Users,
+    ShieldCheck,
     LogOut,
     Menu,
     X,
@@ -282,6 +283,11 @@ export default function MainLayout() {
             name: "Reports",
             path: "/reports",
             icon: FileText,
+        },
+        {
+            name: "Audit Trail",
+            path: "/audit-trail",
+            icon: ShieldCheck,
         },
     ];
 

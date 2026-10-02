@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\ActivityLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
@@ -71,6 +72,18 @@ class AuthController extends Controller
             'uniteq-web'
         )->plainTextToken;
 
+        ActivityLog::record(
+            'LOGIN',
+            'Authentication',
+            "User {$user->name} ({$user->role}) logged in successfully.",
+            null,
+            $user->id,
+            [
+                'email' => $user->email,
+                'role' => $user->role,
+            ]
+        );
+
         return response()->json([
             'message' => 'Login successful.',
 
@@ -120,6 +133,14 @@ class AuthController extends Controller
         $user = $request->user();
 
         if ($user) {
+            ActivityLog::record(
+                'LOGOUT',
+                'Authentication',
+                "User {$user->name} ({$user->role}) logged out.",
+                null,
+                $user->id
+            );
+
             $user->currentAccessToken()?->delete();
         }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Voucher;
+use App\Models\ActivityLog;
 use Illuminate\Http\Request;
 
 class VoucherController extends Controller
@@ -54,6 +55,21 @@ class VoucherController extends Controller
             'received_by' => $validated['receivedBy'] ?? null,
             'status' => $validated['status'] ?? 'Pending',
         ]);
+
+        ActivityLog::record(
+            'CREATED',
+            'Vouchers',
+            "Created Disbursement Voucher {$voucher->voucher_number} for {$voucher->payee} (Amount: PHP " . number_format($voucher->amount, 2) . ", Status: {$voucher->status})",
+            $voucher->voucher_number,
+            $voucher->id,
+            [
+                'payee' => $voucher->payee,
+                'amount' => $voucher->amount,
+                'status' => $voucher->status,
+                'purpose' => $voucher->purpose,
+                'office' => $voucher->office,
+            ]
+        );
 
         return response()->json([
             'message' => 'Voucher created successfully.',
@@ -106,6 +122,21 @@ class VoucherController extends Controller
             'status' => $validated['status'] ?? 'Pending',
         ]);
 
+        ActivityLog::record(
+            'UPDATED',
+            'Vouchers',
+            "Updated Disbursement Voucher {$voucher->voucher_number} (Payee: {$voucher->payee}, Status: {$voucher->status}, Amount: PHP " . number_format($voucher->amount, 2) . ")",
+            $voucher->voucher_number,
+            $voucher->id,
+            [
+                'payee' => $voucher->payee,
+                'amount' => $voucher->amount,
+                'status' => $voucher->status,
+                'purpose' => $voucher->purpose,
+                'office' => $voucher->office,
+            ]
+        );
+
         return response()->json([
             'message' => 'Voucher updated successfully.',
             'voucher' => $voucher,
@@ -117,6 +148,18 @@ class VoucherController extends Controller
      */
     public function destroy(Voucher $voucher)
     {
+        ActivityLog::record(
+            'DELETED',
+            'Vouchers',
+            "Deleted Disbursement Voucher {$voucher->voucher_number} (Payee: {$voucher->payee}, Amount: PHP " . number_format($voucher->amount, 2) . ")",
+            $voucher->voucher_number,
+            $voucher->id,
+            [
+                'payee' => $voucher->payee,
+                'amount' => $voucher->amount,
+            ]
+        );
+
         $voucher->delete();
 
         return response()->json([

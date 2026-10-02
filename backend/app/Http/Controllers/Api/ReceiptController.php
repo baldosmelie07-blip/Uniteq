@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Receipt;
+use App\Models\ActivityLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -34,8 +35,8 @@ class ReceiptController extends Controller
             '>',
             0
         )
-        ->orderBy('id', 'asc')
-        ->get();
+            ->orderBy('id', 'asc')
+            ->get();
 
         return response()->json([
             'data' => $receipts,
@@ -47,6 +48,14 @@ class ReceiptController extends Controller
      * POST /api/receipts
      *
      * Create a new receipt.
+     *
+     * Supports:
+     * amount_due + amount_paid
+     * amount / amount_collected
+     *
+     * If only amount is provided,
+     * it is treated as both amount due
+     * and amount paid.
      */
     public function store(Request $request)
     {
@@ -80,13 +89,25 @@ class ReceiptController extends Controller
             ],
 
             'amount_due' => [
-                'required',
+                'nullable',
                 'numeric',
                 'min:0',
             ],
 
             'amount_paid' => [
-                'required',
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'amount' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'amount_collected' => [
+                'nullable',
                 'numeric',
                 'min:0',
             ],
@@ -99,19 +120,65 @@ class ReceiptController extends Controller
         ]);
 
 
-        $amountDue =
-            (float) $validated['amount_due'];
+        /*
+         * ----------------------------------------------------
+         * DETERMINE AMOUNT DUE
+         * ----------------------------------------------------
+         */
 
-        $amountPaid =
-            (float) $validated['amount_paid'];
+        if (
+            isset($validated['amount_due']) &&
+            $validated['amount_due'] !== null
+        ) {
+            $amountDue = (float) $validated['amount_due'];
+        } elseif (
+            isset($validated['amount_collected']) &&
+            $validated['amount_collected'] !== null
+        ) {
+            $amountDue = (float) $validated['amount_collected'];
+        } elseif (
+            isset($validated['amount']) &&
+            $validated['amount'] !== null
+        ) {
+            $amountDue = (float) $validated['amount'];
+        } else {
+            $amountDue = 0;
+        }
 
 
         /*
-         * Amount paid cannot be greater
-         * than amount due.
+         * ----------------------------------------------------
+         * DETERMINE AMOUNT PAID
+         * ----------------------------------------------------
          */
-        if ($amountPaid > $amountDue) {
 
+        if (
+            isset($validated['amount_paid']) &&
+            $validated['amount_paid'] !== null
+        ) {
+            $amountPaid = (float) $validated['amount_paid'];
+        } elseif (
+            isset($validated['amount_collected']) &&
+            $validated['amount_collected'] !== null
+        ) {
+            $amountPaid = (float) $validated['amount_collected'];
+        } elseif (
+            isset($validated['amount']) &&
+            $validated['amount'] !== null
+        ) {
+            $amountPaid = (float) $validated['amount'];
+        } else {
+            $amountPaid = 0;
+        }
+
+
+        /*
+         * ----------------------------------------------------
+         * PREVENT OVERPAYMENT
+         * ----------------------------------------------------
+         */
+
+        if ($amountPaid > $amountDue) {
             return response()->json([
                 'message' =>
                     'Amount paid cannot be greater than the amount due.',
@@ -120,19 +187,23 @@ class ReceiptController extends Controller
 
 
         /*
-         * Calculate remaining balance.
+         * ----------------------------------------------------
+         * CALCULATE REMAINING BALANCE
+         * ----------------------------------------------------
          */
-        $remainingBalance =
-            max(
-                $amountDue - $amountPaid,
-                0
-            );
+
+        $remainingBalance = max(
+            $amountDue - $amountPaid,
+            0
+        );
 
 
         /*
-         * Generate OR number and create
-         * the receipt inside a transaction.
+         * ----------------------------------------------------
+         * GENERATE RECEIPT NUMBER
+         * ----------------------------------------------------
          */
+
         $receipt = DB::transaction(
             function () use (
                 $validated,
@@ -142,18 +213,27 @@ class ReceiptController extends Controller
             ) {
 
                 /*
-                 * Find the latest OR number.
+                 * Find the latest receipt.
                  */
-                $lastReceipt =
-                    Receipt::whereNotNull(
-                        'receipt_number'
-                    )
+
+                $lastReceipt = Receipt::whereNotNull(
+                    'receipt_number'
+                )
                     ->orderByDesc('id')
                     ->first();
 
 
+                /*
+                 * Start with OR-0001.
+                 */
+
                 $nextNumber = 1;
 
+
+                /*
+                 * If a receipt already exists,
+                 * get the next number.
+                 */
 
                 if ($lastReceipt) {
 
@@ -172,8 +252,10 @@ class ReceiptController extends Controller
 
 
                 /*
-                 * Make sure OR number is unique.
+                 * Make sure the receipt number
+                 * is unique.
                  */
+
                 do {
 
                     $receiptNumber =
@@ -185,11 +267,13 @@ class ReceiptController extends Controller
                             STR_PAD_LEFT
                         );
 
+
                     $exists =
                         Receipt::where(
                             'receipt_number',
                             $receiptNumber
                         )->exists();
+
 
                     if ($exists) {
                         $nextNumber++;
@@ -199,14 +283,17 @@ class ReceiptController extends Controller
 
 
                 /*
-                 * Create receipt.
-                 *
-                 * IMPORTANT:
+                 * ------------------------------------------------
+                 * CREATE RECEIPT
+                 * ------------------------------------------------
                  *
                  * original_amount = Amount Due
-                 * amount = Amount Paid
+                 * amount          = Amount Paid
+                 * remaining_balance = Amount Due - Amount Paid
                  */
+
                 return Receipt::create([
+
                     'receipt_number' =>
                         $receiptNumber,
 
@@ -238,12 +325,63 @@ class ReceiptController extends Controller
 
                     'payment_method' =>
                         $validated['payment_method'],
+
                 ]);
             }
         );
 
 
+        /*
+         * ----------------------------------------------------
+         * RECORD IN AUDIT TRAIL / ACTIVITY LOG
+         * ----------------------------------------------------
+         */
+
+        ActivityLog::record(
+            'CREATED',
+            'Receipts',
+
+            "Issued Official Receipt {$receipt->receipt_number} " .
+            "to {$receipt->payer_name} for PHP " .
+            number_format($receipt->amount, 2) .
+            " (" .
+            ($receipt->purpose ?? 'General Collection') .
+            ")",
+
+            $receipt->receipt_number,
+
+            $receipt->id,
+
+            [
+                'payer_name' =>
+                    $receipt->payer_name,
+
+                'amount_paid' =>
+                    $receipt->amount,
+
+                'amount_due' =>
+                    $receipt->original_amount,
+
+                'remaining_balance' =>
+                    $receipt->remaining_balance,
+
+                'payment_method' =>
+                    $receipt->payment_method,
+
+                'purpose' =>
+                    $receipt->purpose,
+            ]
+        );
+
+
+        /*
+         * ----------------------------------------------------
+         * RETURN CREATED RECEIPT
+         * ----------------------------------------------------
+         */
+
         return response()->json([
+
             'message' =>
                 'Receipt created successfully.',
 
@@ -268,11 +406,13 @@ class ReceiptController extends Controller
             Receipt::findOrFail($id);
 
         return response()->json([
+
             'receipt' =>
                 $receipt,
 
             'status' =>
                 $this->calculateStatus($receipt),
+
         ]);
     }
 
@@ -320,8 +460,9 @@ class ReceiptController extends Controller
 
 
         /*
-         * Already paid.
+         * Already fully paid.
          */
+
         if ($currentBalance <= 0) {
 
             return response()->json([
@@ -332,9 +473,10 @@ class ReceiptController extends Controller
 
 
         /*
-         * Payment cannot exceed
-         * remaining balance.
+         * Payment cannot be greater
+         * than remaining balance.
          */
+
         if ($paymentAmount > $currentBalance) {
 
             return response()->json([
@@ -345,8 +487,9 @@ class ReceiptController extends Controller
 
 
         /*
-         * Add the new payment.
+         * Add new payment.
          */
+
         $newAmountPaid =
             $currentPaid +
             $paymentAmount;
@@ -355,6 +498,7 @@ class ReceiptController extends Controller
         /*
          * Calculate new balance.
          */
+
         $newBalance =
             max(
                 $currentDue -
@@ -363,12 +507,18 @@ class ReceiptController extends Controller
             );
 
 
+        /*
+         * Update receipt.
+         */
+
         $receipt->update([
+
             'amount' =>
                 $newAmountPaid,
 
             'remaining_balance' =>
                 $newBalance,
+
         ]);
 
 
@@ -376,7 +526,43 @@ class ReceiptController extends Controller
             $receipt->fresh();
 
 
+        /*
+         * Record in Audit Trail / Activity Log
+         */
+
+        ActivityLog::record(
+            'PAYMENT',
+            'Receipts',
+
+            "Recorded partial/full payment of PHP " .
+            number_format($paymentAmount, 2) .
+            " for {$receipt->receipt_number} " .
+            "(Payer: {$receipt->payer_name}). " .
+            "Remaining balance: PHP " .
+            number_format($newBalance, 2),
+
+            $receipt->receipt_number,
+
+            $receipt->id,
+
+            [
+                'payment_amount' =>
+                    $paymentAmount,
+
+                'previous_paid' =>
+                    $currentPaid,
+
+                'total_paid' =>
+                    $newAmountPaid,
+
+                'remaining_balance' =>
+                    $newBalance,
+            ]
+        );
+
+
         return response()->json([
+
             'message' =>
                 $newBalance <= 0
                     ? 'Payment recorded successfully. Receipt is now fully paid.'
@@ -390,6 +576,7 @@ class ReceiptController extends Controller
 
             'remaining_balance' =>
                 $newBalance,
+
         ]);
     }
 
@@ -409,6 +596,7 @@ class ReceiptController extends Controller
 
 
         $validated = $request->validate([
+
             'date' => [
                 'required',
                 'date',
@@ -438,13 +626,25 @@ class ReceiptController extends Controller
             ],
 
             'amount_due' => [
-                'required',
+                'nullable',
                 'numeric',
                 'min:0',
             ],
 
             'amount_paid' => [
-                'required',
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'amount' => [
+                'nullable',
+                'numeric',
+                'min:0',
+            ],
+
+            'amount_collected' => [
+                'nullable',
                 'numeric',
                 'min:0',
             ],
@@ -454,19 +654,88 @@ class ReceiptController extends Controller
                 'string',
                 'max:50',
             ],
+
         ]);
 
 
-        $amountDue =
-            (float) $validated['amount_due'];
+        /*
+         * Determine amount due.
+         */
 
-        $amountPaid =
-            (float) $validated['amount_paid'];
+        if (
+            isset($validated['amount_due']) &&
+            $validated['amount_due'] !== null
+        ) {
+
+            $amountDue =
+                (float) $validated['amount_due'];
+
+        } elseif (
+            isset($validated['amount_collected']) &&
+            $validated['amount_collected'] !== null
+        ) {
+
+            $amountDue =
+                (float) $validated['amount_collected'];
+
+        } elseif (
+            isset($validated['amount']) &&
+            $validated['amount'] !== null
+        ) {
+
+            $amountDue =
+                (float) $validated['amount'];
+
+        } else {
+
+            $amountDue =
+                (float) (
+                    $receipt->original_amount ?? 0
+                );
+        }
+
+
+        /*
+         * Determine amount paid.
+         */
+
+        if (
+            isset($validated['amount_paid']) &&
+            $validated['amount_paid'] !== null
+        ) {
+
+            $amountPaid =
+                (float) $validated['amount_paid'];
+
+        } elseif (
+            isset($validated['amount_collected']) &&
+            $validated['amount_collected'] !== null
+        ) {
+
+            $amountPaid =
+                (float) $validated['amount_collected'];
+
+        } elseif (
+            isset($validated['amount']) &&
+            $validated['amount'] !== null
+        ) {
+
+            $amountPaid =
+                (float) $validated['amount'];
+
+        } else {
+
+            $amountPaid =
+                (float) (
+                    $receipt->amount ?? 0
+                );
+        }
 
 
         /*
          * Prevent overpayment.
          */
+
         if ($amountPaid > $amountDue) {
 
             return response()->json([
@@ -479,6 +748,7 @@ class ReceiptController extends Controller
         /*
          * Calculate remaining balance.
          */
+
         $remainingBalance =
             max(
                 $amountDue -
@@ -488,11 +758,13 @@ class ReceiptController extends Controller
 
 
         /*
-         * Update the receipt.
+         * Update receipt.
          *
-         * The OR number is NOT changed.
+         * Receipt number stays the same.
          */
+
         $receipt->update([
+
             'date' =>
                 $validated['date'],
 
@@ -521,6 +793,7 @@ class ReceiptController extends Controller
 
             'payment_method' =>
                 $validated['payment_method'],
+
         ]);
 
 
@@ -528,7 +801,49 @@ class ReceiptController extends Controller
             $receipt->fresh();
 
 
+        /*
+         * Record in Audit Trail / Activity Log
+         */
+
+        ActivityLog::record(
+            'UPDATED',
+            'Receipts',
+
+            "Updated Official Receipt " .
+            "{$receipt->receipt_number} " .
+            "(Payer: {$receipt->payer_name}, " .
+            "Amount: PHP " .
+            number_format($receipt->amount, 2) .
+            ")",
+
+            $receipt->receipt_number,
+
+            $receipt->id,
+
+            [
+                'payer_name' =>
+                    $receipt->payer_name,
+
+                'amount_paid' =>
+                    $receipt->amount,
+
+                'amount_due' =>
+                    $receipt->original_amount,
+
+                'remaining_balance' =>
+                    $receipt->remaining_balance,
+
+                'payment_method' =>
+                    $receipt->payment_method,
+
+                'purpose' =>
+                    $receipt->purpose,
+            ]
+        );
+
+
         return response()->json([
+
             'message' =>
                 'Receipt updated successfully.',
 
@@ -537,6 +852,7 @@ class ReceiptController extends Controller
 
             'status' =>
                 $this->calculateStatus($receipt),
+
         ]);
     }
 
@@ -550,6 +866,39 @@ class ReceiptController extends Controller
     {
         $receipt =
             Receipt::findOrFail($id);
+
+
+        /*
+         * Record in Audit Trail / Activity Log
+         * before deletion.
+         */
+
+        ActivityLog::record(
+            'DELETED',
+            'Receipts',
+
+            "Deleted/Voided Official Receipt " .
+            "{$receipt->receipt_number} " .
+            "(Payer: {$receipt->payer_name}, " .
+            "Amount: PHP " .
+            number_format($receipt->amount, 2) .
+            ")",
+
+            $receipt->receipt_number,
+
+            $receipt->id,
+
+            [
+                'payer_name' =>
+                    $receipt->payer_name,
+
+                'amount_paid' =>
+                    $receipt->amount,
+
+                'purpose' =>
+                    $receipt->purpose,
+            ]
+        );
 
 
         $receipt->delete();
@@ -579,16 +928,22 @@ class ReceiptController extends Controller
     ) {
 
         $amountDue =
-            (float) ($receipt->original_amount ?? 0);
+            (float) (
+                $receipt->original_amount ?? 0
+            );
+
 
         $amountPaid =
-            (float) ($receipt->amount ?? 0);
+            (float) (
+                $receipt->amount ?? 0
+            );
 
 
         if (
             $amountDue > 0 &&
             $amountPaid >= $amountDue
         ) {
+
             return 'Paid';
         }
 
@@ -597,6 +952,7 @@ class ReceiptController extends Controller
             $amountPaid > 0 &&
             $amountPaid < $amountDue
         ) {
+
             return 'Partially Paid';
         }
 

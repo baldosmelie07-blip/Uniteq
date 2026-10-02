@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ReceiptController;
 use App\Http\Controllers\Api\VoucherController;
+use App\Http\Controllers\Api\ActivityLogController;
 
 // Authentication
 
@@ -52,5 +53,11 @@ Route::middleware('auth:sanctum')->group(function () {
    // Vouchers
 
     Route::apiResource('vouchers', VoucherController::class);
+
+
+    // Audit Trail / Activity Logs
+
+    Route::get('/activity-logs', [ActivityLogController::class, 'index']);
+    Route::get('/activity-logs/summary', [ActivityLogController::class, 'summary']);
 
 });

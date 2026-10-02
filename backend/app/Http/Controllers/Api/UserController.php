@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\ActivityLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
@@ -89,6 +90,19 @@ class UserController extends Controller
         );
 
         $user = User::create($validated);
+
+        ActivityLog::record(
+            'CREATED',
+            'Users',
+            "Created user {$user->name} with role {$user->role} ({$user->email})",
+            null,
+            $user->id,
+            [
+                'email' => $user->email,
+                'role' => $user->role,
+                'status' => $user->status,
+            ]
+        );
 
         return response()->json([
             'message' => 'User created successfully.',
@@ -204,6 +218,19 @@ class UserController extends Controller
 
         $user->update($validated);
 
+        ActivityLog::record(
+            'UPDATED',
+            'Users',
+            "Updated user {$user->name} ({$user->role}, status: {$user->status})",
+            null,
+            $user->id,
+            [
+                'email' => $user->email,
+                'role' => $user->role,
+                'status' => $user->status,
+            ]
+        );
+
         /*
          * Revoke tokens if account becomes inactive.
          */
@@ -241,6 +268,14 @@ class UserController extends Controller
                     'You cannot delete your own account.'
             ], 422);
         }
+
+        ActivityLog::record(
+            'DELETED',
+            'Users',
+            "Deleted user account {$user->name} ({$user->email})",
+            null,
+            $user->id
+        );
 
         /*
          * Revoke tokens before deletion.
