@@ -1,2516 +1,1266 @@
-import { useEffect, useMemo, useState } from "react";
-
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
+    Wallet,
     Receipt,
     FileText,
-    BarChart3,
-    Wallet,
     Clock3,
-    AlertCircle,
+    Search,
+    RefreshCw,
+    Plus,
     ArrowUpRight,
+    ArrowDownLeft,
     CalendarDays,
-    TrendingUp,
-    ChevronDown,
+    ShieldCheck,
+    Activity,
     ChevronLeft,
     ChevronRight,
-    Users,
-    Plus,
-    ShieldCheck,
+    CircleAlert,
+    CheckCircle2,
+    XCircle,
+    Eye,
+    Landmark,
+    FileCheck,
+    TrendingUp,
 } from "lucide-react";
-
-import { Link } from "react-router-dom";
-
 import api from "../api/api";
 
+const PAGE_SIZE = 8;
 
-export default function Dashboard() {
+const money = (amount) =>
+    new Intl.NumberFormat("en-PH", {
+        style: "currency",
+        currency: "PHP",
+        minimumFractionDigits: 2,
+    }).format(Number(amount) || 0);
 
-    /*
-    |--------------------------------------------------------------------------
-    | STATE
-    |--------------------------------------------------------------------------
-    */
+function getArray(data) {
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.receipts)) return data.receipts;
+    if (Array.isArray(data?.vouchers)) return data.vouchers;
+    return [];
+}
 
-    const [receipts, setReceipts] = useState([]);
-    const [vouchers, setVouchers] = useState([]);
+function getDate(item) {
+    return item?.date || item?.collection_date || item?.created_at || null;
+}
 
-    const [loading, setLoading] = useState(true);
+function parseDate(value) {
+    if (!value) return null;
 
-    const [selectedAcademicYear, setSelectedAcademicYear] =
-        useState("2024-2025");
+    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
 
-    const [recentPage, setRecentPage] =
-        useState(0);
+    if (match) {
+        const year = Number(match[1]);
+        const month = Number(match[2]) - 1;
+        const day = Number(match[3]);
 
+        const date = new Date(year, month, day);
 
-    /*
-    |--------------------------------------------------------------------------
-    | CURRENT DATE
-    |--------------------------------------------------------------------------
-    */
-
-    const now = new Date();
-
-    const currentMonth =
-        now.getMonth();
-
-    const currentYear =
-        now.getFullYear();
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | CURRENT USER
-    |--------------------------------------------------------------------------
-    */
-
-    const currentUser = useMemo(() => {
-
-        try {
-
-            return JSON.parse(
-                localStorage.getItem("uniteq_user") ||
-                sessionStorage.getItem("uniteq_user") ||
-                "null"
-            );
-
-        } catch {
-
-            return null;
-
-        }
-
-    }, []);
-
-
-    const isSystemAdministrator =
-        currentUser?.role === "System Administrator";
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | LOAD DASHBOARD DATA
-    |--------------------------------------------------------------------------
-    */
-
-    useEffect(() => {
-
-        loadDashboardData();
-
-    }, []);
-
-
-    async function loadDashboardData() {
-
-        try {
-
-            setLoading(true);
-
-            const [
-                receiptsResponse,
-                vouchersResponse,
-            ] = await Promise.all([
-
-                api.get("/receipts"),
-
-                api.get("/vouchers"),
-
-            ]);
-
-
-            const receiptData =
-                Array.isArray(receiptsResponse.data)
-
-                    ? receiptsResponse.data
-
-                    : receiptsResponse.data?.data || [];
-
-
-            const voucherData =
-                Array.isArray(vouchersResponse.data)
-
-                    ? vouchersResponse.data
-
-                    : vouchersResponse.data?.data || [];
-
-
-            setReceipts(receiptData);
-
-            setVouchers(voucherData);
-
-        } catch (error) {
-
-            console.error(
-                "Dashboard loading error:",
-                error
-            );
-
-            setReceipts([]);
-
-            setVouchers([]);
-
-        } finally {
-
-            setLoading(false);
-
-        }
-
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | SAFE DATE PARSER
-    |--------------------------------------------------------------------------
-    */
-
-    function parseDate(value) {
-
-        if (!value) {
+        if (
+            date.getFullYear() !== year ||
+            date.getMonth() !== month ||
+            date.getDate() !== day
+        ) {
             return null;
         }
 
-
-        const valueString =
-            String(value);
-
-
-        const match =
-            valueString.match(
-                /^(\d{4})-(\d{2})-(\d{2})/
-            );
-
-
-        if (match) {
-
-            return {
-
-                year:
-                    Number(match[1]),
-
-                month:
-                    Number(match[2]) - 1,
-
-                day:
-                    Number(match[3]),
-
-            };
-
-        }
-
-
-        const parsed =
-            new Date(value);
-
-
-        if (
-            Number.isNaN(
-                parsed.getTime()
-            )
-        ) {
-
-            return null;
-
-        }
-
-
-        return {
-
-            year:
-                parsed.getFullYear(),
-
-            month:
-                parsed.getMonth(),
-
-            day:
-                parsed.getDate(),
-
-        };
-
+        return date;
     }
 
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
 
-    /*
-    |--------------------------------------------------------------------------
-    | RECEIPT DATE
-    |--------------------------------------------------------------------------
-    */
+function displayDate(value) {
+    const date = parseDate(value);
 
-    function getReceiptDate(receipt) {
+    if (!date) return "—";
 
-        return (
+    return date.toLocaleDateString("en-PH", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+    });
+}
 
-            receipt.date ||
+function getReceiptAmount(item) {
+    return Number(
+        item?.amount ??
+        item?.total_amount ??
+        item?.collection_amount ??
+        0
+    ) || 0;
+}
 
-            receipt.collection_date ||
+function getVoucherAmount(item) {
+    return Number(item?.amount ?? item?.total_amount ?? 0) || 0;
+}
 
-            receipt.created_at
+function getReceiptNumber(item) {
+    return (
+        item?.receipt_number ||
+        item?.or_number ||
+        item?.reference_no ||
+        `OR-${item?.id ?? "—"}`
+    );
+}
 
-        );
+function getVoucherNumber(item) {
+    return (
+        item?.voucher_number ||
+        item?.dv_number ||
+        item?.voucher_no ||
+        item?.reference_no ||
+        `DV-${item?.id ?? "—"}`
+    );
+}
 
+function getReceiptName(item) {
+    return (
+        item?.payer_name ||
+        item?.received_from ||
+        item?.payor ||
+        item?.student_name ||
+        item?.name ||
+        item?.purpose ||
+        "Collection"
+    );
+}
+
+function getVoucherName(item) {
+    return (
+        item?.payee_name ||
+        item?.payee ||
+        item?.name ||
+        item?.purpose ||
+        "Disbursement"
+    );
+}
+
+function normalizeStatus(status) {
+    const value = String(status || "Pending").trim().toLowerCase();
+
+    if (value.includes("reject") || value.includes("cancel")) {
+        return "Rejected";
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | RECEIPT AMOUNT
-    |--------------------------------------------------------------------------
-    */
-
-    function getReceiptAmount(receipt) {
-
-        return Number(
-
-            receipt.amount ||
-
-            receipt.total_amount ||
-
-            receipt.collection_amount ||
-
-            0
-
-        );
-
+    if (value.includes("return") || value.includes("correction")) {
+        return "Returned";
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | FORMAT CURRENCY
-    |--------------------------------------------------------------------------
-    */
-
-    function formatCurrency(amount) {
-
-        return new Intl.NumberFormat(
-
-            "en-PH",
-
-            {
-
-                style: "currency",
-
-                currency: "PHP",
-
-            }
-
-        ).format(
-
-            Number(amount) || 0
-
-        );
-
+    if (
+        value.includes("paid") ||
+        value.includes("completed") ||
+        value.includes("issued")
+    ) {
+        return "Completed";
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | FORMAT DATE
-    |--------------------------------------------------------------------------
-    */
-
-    function formatDate(value) {
-
-        const parsed =
-            parseDate(value);
-
-
-        if (!parsed) {
-
-            return "—";
-
-        }
-
-
-        const date =
-            new Date(
-
-                parsed.year,
-
-                parsed.month,
-
-                parsed.day
-
-            );
-
-
-        return date.toLocaleDateString(
-
-            "en-PH",
-
-            {
-
-                year: "numeric",
-
-                month: "short",
-
-                day: "numeric",
-
-            }
-
-        );
-
+    if (value.includes("approv")) return "Approved";
+    if (value.includes("review") || value.includes("verification")) {
+        return "Under Review";
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | ACADEMIC YEARS
-    |--------------------------------------------------------------------------
-    |
-    | The system will begin with:
-    |
-    | 2024-2025
-    | 2025-2026
-    | 2026-2027
-    |
-    | More years can automatically appear when records contain them.
-    |
-    */
-
-    const academicYears = useMemo(() => {
-
-        const years = new Set([
-
-            "2024-2025",
-
-            "2025-2026",
-
-            "2026-2027",
-
-        ]);
-
-
-        receipts.forEach((receipt) => {
-
-            const date =
-                parseDate(
-                    getReceiptDate(receipt)
-                );
-
-
-            if (!date) {
-                return;
-            }
-
-
-            /*
-             * Academic year starts around August/September.
-             *
-             * Example:
-             *
-             * September 2024 -> AY 2024-2025
-             * June 2025       -> AY 2024-2025
-             */
-
-            const startYear =
-                date.month >= 7
-                    ? date.year
-                    : date.year - 1;
-
-
-            years.add(
-
-                `${startYear}-${startYear + 1}`
-
-            );
-
-        });
-
-
-        return Array.from(years)
-            .sort((a, b) => {
-
-                return (
-                    Number(b.substring(0, 4)) -
-                    Number(a.substring(0, 4))
-                );
-
-            });
-
-    }, [receipts]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | MAKE SURE ACADEMIC YEAR EXISTS
-    |--------------------------------------------------------------------------
-    */
-
-    useEffect(() => {
-
-        if (
-
-            academicYears.length > 0 &&
-
-            !academicYears.includes(
-                selectedAcademicYear
-            )
-
-        ) {
-
-            setSelectedAcademicYear(
-                academicYears[academicYears.length - 1]
-            );
-
-        }
-
-    }, [
-        academicYears,
-        selectedAcademicYear,
-    ]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | GET ACADEMIC YEAR RANGE
-    |--------------------------------------------------------------------------
-    */
-
-    function getAcademicYearRange(academicYear) {
-
-        const startYear =
-            Number(
-                academicYear.substring(0, 4)
-            );
-
-
-        const endYear =
-            startYear + 1;
-
-
-        return {
-            startYear,
-            endYear,
-        };
-
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | COLLECTION OVERVIEW
-    |--------------------------------------------------------------------------
-    */
-
-    const academicYearReceipts =
-        useMemo(() => {
-
-            const {
-                startYear,
-                endYear,
-            } =
-                getAcademicYearRange(
-                    selectedAcademicYear
-                );
-
-
-            return receipts.filter(
-                (receipt) => {
-
-                    const date =
-                        parseDate(
-                            getReceiptDate(receipt)
-                        );
-
-
-                    if (!date) {
-
-                        return false;
-
-                    }
-
-
-                    /*
-                     * August 1 onward belongs
-                     * to the new academic year.
-                     *
-                     * January-July belongs
-                     * to the previous AY.
-                     */
-
-                    if (date.month >= 7) {
-
-                        return (
-                            date.year ===
-                            startYear
-                        );
-
-                    }
-
-
-                    return (
-                        date.year ===
-                        endYear
-                    );
-
-                }
-            );
-
-        }, [
-            receipts,
-            selectedAcademicYear,
-        ]);
-
-
-    const academicYearCollection =
-        academicYearReceipts.reduce(
-
-            (total, receipt) => {
-
-                return (
-                    total +
-                    getReceiptAmount(receipt)
-                );
-
-            },
-
-            0
-
-        );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | ACADEMIC YEAR TRANSACTIONS
-    |--------------------------------------------------------------------------
-    */
-
-    const academicYearTransactions =
-        academicYearReceipts.length;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | MONTHLY COLLECTION
-    |--------------------------------------------------------------------------
-    */
-
-    const monthNames = [
-
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-
-    ];
-
-
-    const monthlyCollectionData =
-        useMemo(() => {
-
-            const totals =
-                Array(12).fill(0);
-
-
-            receipts.forEach(
-                (receipt) => {
-
-                    const date =
-                        parseDate(
-                            getReceiptDate(receipt)
-                        );
-
-
-                    if (!date) {
-                        return;
-                    }
-
-
-                    totals[date.month] +=
-                        getReceiptAmount(
-                            receipt
-                        );
-
-                }
-            );
-
-
-            return totals.map(
-                (amount, index) => ({
-
-                    month:
-                        monthNames[index],
-
-                    shortMonth:
-                        monthNames[index]
-                            .substring(0, 3),
-
-                    amount,
-
-                })
-            );
-
-        }, [receipts]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | LAST 7 DAYS
-    |--------------------------------------------------------------------------
-    */
-
-    const lastSevenDays =
-        useMemo(() => {
-
-            const days = [];
-
-
-            for (
-                let i = 6;
-                i >= 0;
-                i--
-            ) {
-
-                const date =
-                    new Date();
-
-
-                date.setDate(
-                    date.getDate() - i
-                );
-
-
-                let amount = 0;
-
-
-                receipts.forEach(
-                    (receipt) => {
-
-                        const parsed =
-                            parseDate(
-                                getReceiptDate(
-                                    receipt
-                                )
-                            );
-
-
-                        if (!parsed) {
-                            return;
-                        }
-
-
-                        if (
-
-                            parsed.year ===
-                                date.getFullYear()
-
-                            &&
-
-                            parsed.month ===
-                                date.getMonth()
-
-                            &&
-
-                            parsed.day ===
-                                date.getDate()
-
-                        ) {
-
-                            amount +=
-                                getReceiptAmount(
-                                    receipt
-                                );
-
-                        }
-
-                    }
-                );
-
-
-                days.push({
-
-                    label:
-                        date.toLocaleDateString(
-                            "en-PH",
-                            {
-                                weekday: "short",
-                            }
-                        ).substring(0, 3),
-
-                    amount,
-
-                });
-
-            }
-
-
-            return days;
-
-        }, [receipts]);
-
-
-    const maximumLastSevenDays =
-        Math.max(
-
-            ...lastSevenDays.map(
-                (day) => day.amount
-            ),
-
-            1
-
-        );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | TODAY'S COLLECTION
-    |--------------------------------------------------------------------------
-    */
-
-    const todaysCollection =
-        receipts.reduce(
-
-            (total, receipt) => {
-
-                const parsed =
-                    parseDate(
-                        getReceiptDate(receipt)
-                    );
-
-
-                if (!parsed) {
-
-                    return total;
-
-                }
-
-
-                if (
-
-                    parsed.year ===
-                        now.getFullYear()
-
-                    &&
-
-                    parsed.month ===
-                        now.getMonth()
-
-                    &&
-
-                    parsed.day ===
-                        now.getDate()
-
-                ) {
-
-                    return (
-                        total +
-                        getReceiptAmount(
-                            receipt
-                        )
-                    );
-
-                }
-
-
-                return total;
-
-            },
-
-            0
-
-        );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | MONTHLY COLLECTION
-    |--------------------------------------------------------------------------
-    */
-
-    const monthlyCollection =
-        receipts.reduce(
-
-            (total, receipt) => {
-
-                const date =
-                    parseDate(
-                        getReceiptDate(receipt)
-                    );
-
-
-                if (!date) {
-
-                    return total;
-
-                }
-
-
-                if (
-
-                    date.month ===
-                        currentMonth
-
-                    &&
-
-                    date.year ===
-                        currentYear
-
-                ) {
-
-                    return (
-
-                        total +
-                        getReceiptAmount(
-                            receipt
-                        )
-
-                    );
-
-                }
-
-
-                return total;
-
-            },
-
-            0
-
-        );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | MONTHLY TRANSACTIONS
-    |--------------------------------------------------------------------------
-    */
-
-    const transactionsThisMonth =
-        receipts.filter(
-            (receipt) => {
-
-                const date =
-                    parseDate(
-                        getReceiptDate(receipt)
-                    );
-
-
-                return (
-
-                    date &&
-
-                    date.month ===
-                        currentMonth
-
-                    &&
-
-                    date.year ===
-                        currentYear
-
-                );
-
-            }
-        ).length;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | PENDING REQUESTS
-    |--------------------------------------------------------------------------
-    */
-
-    const pendingVouchers =
-        vouchers.filter(
-            (voucher) => {
-
-                const status =
-                    String(
-
-                        voucher.status ||
-                        "Pending"
-
-                    )
-                        .toLowerCase()
-                        .trim();
-
-
-                return (
-
-                    status === "pending" ||
-
-                    status === "for approval" ||
-
-                    status === "for verification" ||
-
-                    status === "pending approval"
-
-                );
-
-            }
-        );
-
-
-    const pendingTransactions =
-        pendingVouchers.length;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | OUTSTANDING BALANCES
-    |--------------------------------------------------------------------------
-    */
-
-    const outstandingBalances =
-        receipts.filter(
-            (receipt) => {
-
-                const balance =
-                    Number(
-
-                        receipt.remaining_balance ||
-
-                        receipt.balance ||
-
-                        0
-
-                    );
-
-
-                return balance > 0;
-
-            }
-        ).length;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | RECENT TRANSACTIONS
-    |--------------------------------------------------------------------------
-    */
-
-    const sortedTransactions =
-        useMemo(() => {
-
-            return [...receipts]
-                .sort((a, b) => {
-
-                    const dateA =
-                        new Date(
-                            getReceiptDate(a) || 0
-                        ).getTime();
-
-
-                    const dateB =
-                        new Date(
-                            getReceiptDate(b) || 0
-                        ).getTime();
-
-
-                    if (
-                        dateA !== dateB
-                    ) {
-
-                        return (
-                            dateB -
-                            dateA
-                        );
-
-                    }
-
-
-                    return (
-
-                        Number(b.id || 0) -
-                        Number(a.id || 0)
-
-                    );
-
-                });
-
-        }, [receipts]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | RECENT TRANSACTION PAGINATION
-    |--------------------------------------------------------------------------
-    */
-
-    const transactionsPerPage = 5;
-
-
-    const totalRecentPages =
-        Math.max(
-
-            1,
-
-            Math.ceil(
-
-                sortedTransactions.length /
-                transactionsPerPage
-
-            )
-
-        );
-
-
-    const visibleRecentTransactions =
-        sortedTransactions.slice(
-
-            recentPage *
-                transactionsPerPage,
-
-            (
-                recentPage + 1
-            ) *
-                transactionsPerPage
-
-        );
-
-
-    useEffect(() => {
-
-        if (
-            recentPage >=
-            totalRecentPages
-        ) {
-
-            setRecentPage(
-                Math.max(
-                    0,
-                    totalRecentPages - 1
-                )
-            );
-
-        }
-
-    }, [
-        recentPage,
-        totalRecentPages,
-    ]);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | ACADEMIC YEAR CHART
-    |--------------------------------------------------------------------------
-    */
-
-    const academicYearChart =
-        useMemo(() => {
-
-            const {
-                startYear,
-                endYear,
-            } =
-                getAcademicYearRange(
-                    selectedAcademicYear
-                );
-
-
-            return monthNames.map(
-                (month, index) => {
-
-                    let amount = 0;
-
-
-                    academicYearReceipts.forEach(
-                        (receipt) => {
-
-                            const date =
-                                parseDate(
-                                    getReceiptDate(
-                                        receipt
-                                    )
-                                );
-
-
-                            if (!date) {
-                                return;
-                            }
-
-
-                            if (
-                                date.month ===
-                                index
-                            ) {
-
-                                amount +=
-                                    getReceiptAmount(
-                                        receipt
-                                    );
-
-                            }
-
-                        }
-                    );
-
-
-                    return {
-
-                        month,
-
-                        shortMonth:
-                            month.substring(
-                                0,
-                                3
-                            ),
-
-                        amount,
-
-                    };
-
-                }
-            );
-
-        }, [
-            academicYearReceipts,
-            selectedAcademicYear,
-        ]);
-
-
-    const maximumAcademicCollection =
-        Math.max(
-
-            ...academicYearChart.map(
-                (month) =>
-                    month.amount
-            ),
-
-            1
-
-        );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | RENDER
-    |--------------------------------------------------------------------------
-    */
+    if (value.includes("pending")) return "Pending";
+
+    return status || "Recorded";
+}
+
+function StatusBadge({ status }) {
+    const normalized = normalizeStatus(status);
+
+    const styles = {
+        Completed: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+        Approved: "bg-blue-50 text-blue-700 ring-blue-100",
+        Pending: "bg-amber-50 text-amber-700 ring-amber-100",
+        "Under Review": "bg-violet-50 text-violet-700 ring-violet-100",
+        Rejected: "bg-rose-50 text-rose-700 ring-rose-100",
+        Returned: "bg-orange-50 text-orange-700 ring-orange-100",
+        Recorded: "bg-slate-100 text-slate-600 ring-slate-200",
+    };
 
     return (
-
-        <div className="space-y-6">
-
-
-            {/* =========================================================
-                DASHBOARD HEADER
-            ========================================================= */}
-
-            <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#071d41] via-[#0a2856] to-[#0d3b73] px-6 py-7 md:px-8 shadow-xl">
-
-                <div className="absolute inset-0 opacity-20">
-
-                    <div className="absolute -right-20 -top-24 h-72 w-72 rounded-full border border-cyan-200/30" />
-
-                    <div className="absolute right-20 -bottom-40 h-96 w-96 rounded-full border border-cyan-200/20" />
-
-                </div>
-
-
-                <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-
-                    <div>
-
-                        <div className="flex items-center gap-3">
-
-                            <div className="h-12 w-12 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center">
-
-                                <ShieldCheck
-                                    size={25}
-                                    className="text-cyan-300"
-                                />
-
-                            </div>
-
-
-                            <div>
-
-                                <p className="text-xs uppercase tracking-[0.18em] text-cyan-200 font-semibold">
-
-                                    University of Abra
-
-                                </p>
-
-                                <p className="text-sm text-blue-100">
-
-                                    Main Campus Cashier's Unit
-
-                                </p>
-
-                            </div>
-
-                        </div>
-
-
-                        <h1 className="mt-5 text-3xl md:text-4xl font-bold text-white">
-
-                            Financial Management System
-
-                        </h1>
-
-
-                        <p className="mt-2 max-w-2xl text-sm md:text-base text-blue-100">
-
-                            Monitor collections, financial transactions,
-                            disbursement requests, and cashier activities
-                            in one secure workspace.
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="rounded-2xl bg-white/10 border border-white/10 backdrop-blur-sm px-5 py-4 min-w-[210px]">
-
-                        <div className="flex items-center gap-2 text-cyan-200">
-
-                            <CalendarDays size={17} />
-
-                            <span className="text-xs font-semibold uppercase tracking-wider">
-
-                                Today
-
-                            </span>
-
-                        </div>
-
-
-                        <p className="mt-2 text-white font-semibold">
-
-                            {now.toLocaleDateString(
-                                "en-PH",
-                                {
-                                    weekday: "long",
-                                    month: "long",
-                                    day: "numeric",
-                                    year: "numeric",
-                                }
-                            )}
-
-                        </p>
-
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            {/* =========================================================
-                FEATURE SUGGESTION
-            ========================================================= */}
-
-            <section className="rounded-2xl border border-cyan-100 bg-gradient-to-r from-white to-cyan-50 shadow-sm overflow-hidden">
-
-                <div className="p-6 md:p-7 flex flex-col lg:flex-row lg:items-center gap-6">
-
-                    <div className="h-16 w-16 shrink-0 rounded-2xl bg-cyan-100 text-cyan-700 flex items-center justify-center">
-
-                        <Wallet size={31} />
-
-                    </div>
-
-
-                    <div className="flex-1">
-
-                        <p className="text-xs uppercase tracking-widest font-bold text-cyan-700">
-
-                            Feature Suggestion
-
-                        </p>
-
-
-                        <h2 className="mt-1 text-xl md:text-2xl font-bold text-gray-900">
-
-                            Online Payment Portal Integration
-
-                        </h2>
-
-
-                        <p className="mt-2 text-sm text-gray-600 max-w-3xl">
-
-                            Future development may integrate a secure
-                            student-facing payment portal for tuition
-                            and other online fees, helping reduce manual
-                            entry and improve payment tracking.
-
-                        </p>
-
-                    </div>
-
-
-                    <Link
-                        to="/reports"
-                        className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white px-5 py-3 text-sm font-semibold transition"
-                    >
-
-                        View Reports
-
-                        <ArrowUpRight size={17} />
-
-                    </Link>
-
-                </div>
-
-            </section>
-
-
-            {/* =========================================================
-                SUMMARY CARDS
-            ========================================================= */}
-
-            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-
-
-                {/* TODAY */}
-
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-
-                    <div className="flex items-start justify-between">
-
-                        <div>
-
-                            <p className="text-xs uppercase tracking-wider font-semibold text-gray-500">
-
-                                Today's Cash Collected
-
-                            </p>
-
-
-                            <p className="mt-3 text-2xl font-bold text-gray-900">
-
-                                {loading
-                                    ? "Loading..."
-                                    : formatCurrency(
-                                        todaysCollection
-                                    )}
-
-                            </p>
-
-
-                            <p className="mt-2 text-xs text-gray-500">
-
-                                Current business day
-
-                            </p>
-
-                        </div>
-
-
-                        <div className="h-11 w-11 rounded-xl bg-cyan-50 text-cyan-700 flex items-center justify-center">
-
-                            <Wallet size={21} />
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-
-                {/* MONTH */}
-
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-
-                    <div className="flex items-start justify-between">
-
-                        <div>
-
-                            <p className="text-xs uppercase tracking-wider font-semibold text-gray-500">
-
-                                Monthly Collection
-
-                            </p>
-
-
-                            <p className="mt-3 text-2xl font-bold text-gray-900">
-
-                                {loading
-                                    ? "Loading..."
-                                    : formatCurrency(
-                                        monthlyCollection
-                                    )}
-
-                            </p>
-
-
-                            <p className="mt-2 text-xs text-gray-500">
-
-                                {now.toLocaleDateString(
-                                    "en-PH",
-                                    {
-                                        month: "long",
-                                        year: "numeric",
-                                    }
-                                )}
-
-                            </p>
-
-                        </div>
-
-
-                        <div className="h-11 w-11 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center">
-
-                            <TrendingUp size={21} />
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-
-                {/* PENDING */}
-
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-
-                    <div className="flex items-start justify-between">
-
-                        <div>
-
-                            <p className="text-xs uppercase tracking-wider font-semibold text-gray-500">
-
-                                Pending Staff Approvals
-
-                            </p>
-
-
-                            <p className="mt-3 text-3xl font-bold text-gray-900">
-
-                                {loading
-                                    ? "..."
-                                    : pendingTransactions}
-
-                            </p>
-
-
-                            <p className="mt-2 text-xs text-amber-600">
-
-                                Awaiting approval
-
-                            </p>
-
-                        </div>
-
-
-                        <div className="h-11 w-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-
-                            <Clock3 size={21} />
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-
-                {/* BALANCES */}
-
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-
-                    <div className="flex items-start justify-between">
-
-                        <div>
-
-                            <p className="text-xs uppercase tracking-wider font-semibold text-gray-500">
-
-                                Outstanding Balances
-
-                            </p>
-
-
-                            <p className="mt-3 text-3xl font-bold text-gray-900">
-
-                                {loading
-                                    ? "..."
-                                    : outstandingBalances}
-
-                            </p>
-
-
-                            <p className="mt-2 text-xs text-red-500">
-
-                                Requiring attention
-
-                            </p>
-
-                        </div>
-
-
-                        <div className="h-11 w-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center">
-
-                            <AlertCircle size={21} />
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            {/* =========================================================
-                MAIN ANALYTICS
-            ========================================================= */}
-
-            <section className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-
-
-                {/* =====================================================
-                    TRANSACTION VOLUME
-                ====================================================== */}
-
-                <div className="xl:col-span-2 bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-
-                    <div className="flex items-center justify-between">
-
-                        <div>
-
-                            <div className="flex items-center gap-2">
-
-                                <div className="h-9 w-9 rounded-lg bg-cyan-50 text-cyan-700 flex items-center justify-center">
-
-                                    <BarChart3 size={19} />
-
-                                </div>
-
-
-                                <h2 className="font-bold text-gray-900">
-
-                                    Transaction Volume
-
-                                </h2>
-
-                            </div>
-
-
-                            <p className="text-xs text-gray-500 mt-2">
-
-                                Cash collections for the last 7 days
-
-                            </p>
-
-                        </div>
-
-                    </div>
-
-
-                    <div className="mt-7 h-64 flex items-end gap-3 md:gap-5">
-
-                        {lastSevenDays.map(
-                            (day, index) => {
-
-                                const height =
-                                    day.amount > 0
-
-                                        ? Math.max(
-
-                                            (
-                                                day.amount /
-                                                maximumLastSevenDays
-                                            ) * 100,
-
-                                            5
-
-                                        )
-
-                                        : 4;
-
-
-                                return (
-
-                                    <div
-                                        key={`${day.label}-${index}`}
-                                        className="flex-1 h-full flex flex-col justify-end items-center group"
-                                    >
-
-                                        <div className="mb-2 text-[10px] font-semibold text-gray-500 opacity-0 group-hover:opacity-100 transition">
-
-                                            {formatCurrency(
-                                                day.amount
-                                            )}
-
-                                        </div>
-
-
-                                        <div className="w-full max-w-[45px] h-[82%] flex items-end">
-
-                                            <div
-                                                className="w-full rounded-t-xl bg-gradient-to-t from-cyan-700 to-cyan-400 transition-all duration-500 group-hover:from-cyan-800 group-hover:to-cyan-500"
-                                                style={{
-                                                    height: `${height}%`,
-                                                }}
-                                            />
-
-                                        </div>
-
-
-                                        <span className="mt-3 text-xs font-semibold text-gray-500">
-
-                                            {day.label}
-
-                                        </span>
-
-                                    </div>
-
-                                );
-
-                            }
-                        )}
-
-                    </div>
-
-                </div>
-
-
-                {/* =====================================================
-                    QUICK ACTIONS
-                ====================================================== */}
-
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-
-                    <div>
-
-                        <h2 className="font-bold text-gray-900">
-
-                            Quick Actions
-
-                        </h2>
-
-
-                        <p className="text-xs text-gray-500 mt-1">
-
-                            Frequently used operations
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="mt-5 space-y-3">
-
-
-                        <Link
-                            to="/receipts"
-                            className="group flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3 hover:border-cyan-300 hover:bg-cyan-50 transition"
-                        >
-
-                            <div className="flex items-center gap-3">
-
-                                <div className="h-10 w-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center">
-
-                                    <Receipt size={19} />
-
-                                </div>
-
-
-                                <div>
-
-                                    <p className="font-semibold text-gray-900 text-sm">
-
-                                        Add New Transaction
-
-                                    </p>
-
-                                    <p className="text-xs text-gray-500">
-
-                                        Record a receipt
-
-                                    </p>
-
-                                </div>
-
-                            </div>
-
-
-                            <ArrowUpRight
-                                size={17}
-                                className="text-gray-400 group-hover:text-cyan-700"
-                            />
-
-                        </Link>
-
-
-                        <Link
-                            to="/collections"
-                            className="group flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3 hover:border-cyan-300 hover:bg-cyan-50 transition"
-                        >
-
-                            <div className="flex items-center gap-3">
-
-                                <div className="h-10 w-10 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center">
-
-                                    <Wallet size={19} />
-
-                                </div>
-
-
-                                <div>
-
-                                    <p className="font-semibold text-gray-900 text-sm">
-
-                                        Reconcile Register
-
-                                    </p>
-
-                                    <p className="text-xs text-gray-500">
-
-                                        Review collections
-
-                                    </p>
-
-                                </div>
-
-                            </div>
-
-
-                            <ArrowUpRight
-                                size={17}
-                                className="text-gray-400 group-hover:text-cyan-700"
-                            />
-
-                        </Link>
-
-
-                        {isSystemAdministrator && (
-
-                            <Link
-                                to="/create-account"
-                                className="group flex items-center justify-between rounded-xl bg-cyan-600 hover:bg-cyan-700 px-4 py-3 text-white transition"
-                            >
-
-                                <div className="flex items-center gap-3">
-
-                                    <div className="h-10 w-10 rounded-lg bg-white/15 flex items-center justify-center">
-
-                                        <Users size={19} />
-
-                                    </div>
-
-
-                                    <div>
-
-                                        <p className="font-semibold text-sm">
-
-                                            Create Staff Account
-
-                                        </p>
-
-                                        <p className="text-xs text-cyan-100">
-
-                                            Administrator only
-
-                                        </p>
-
-                                    </div>
-
-                                </div>
-
-
-                                <Plus size={18} />
-
-                            </Link>
-
-                        )}
-
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            {/* =========================================================
-                COLLECTION OVERVIEW
-            ========================================================= */}
-
-            <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-
-                    <div>
-
-                        <div className="flex items-center gap-2">
-
-                            <div className="h-9 w-9 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center">
-
-                                <TrendingUp size={19} />
-
-                            </div>
-
-
-                            <h2 className="font-bold text-gray-900">
-
-                                Collection Overview
-
-                            </h2>
-
-                        </div>
-
-
-                        <p className="text-xs text-gray-500 mt-2">
-
-                            Financial collection summary by academic year
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="relative">
-
-                        <select
-                            value={selectedAcademicYear}
-                            onChange={(e) => {
-
-                                setSelectedAcademicYear(
-                                    e.target.value
-                                );
-
-                            }}
-                            className="appearance-none bg-gray-50 border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl px-4 py-2.5 pr-10 outline-none focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100 cursor-pointer"
-                        >
-
-                            {academicYears.map(
-                                (year) => (
-
-                                    <option
-                                        key={year}
-                                        value={year}
-                                    >
-
-                                        AY {year}
-
-                                    </option>
-
-                                )
-                            )}
-
-                        </select>
-
-
-                        <ChevronDown
-                            size={16}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
-                        />
-
-                    </div>
-
-                </div>
-
-
-                {/* TOTALS */}
-
-                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-
-                    <div className="rounded-xl bg-blue-50 border border-blue-100 p-5">
-
-                        <p className="text-xs uppercase tracking-wider font-semibold text-blue-600">
-
-                            Total Collection
-
-                        </p>
-
-
-                        <p className="mt-2 text-2xl font-bold text-blue-950">
-
-                            {loading
-                                ? "Loading..."
-                                : formatCurrency(
-                                    academicYearCollection
-                                )}
-
-                        </p>
-
-
-                        <p className="mt-1 text-xs text-blue-600">
-
-                            Academic Year {selectedAcademicYear}
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-5">
-
-                        <p className="text-xs uppercase tracking-wider font-semibold text-cyan-600">
-
-                            Transactions
-
-                        </p>
-
-
-                        <p className="mt-2 text-2xl font-bold text-cyan-950">
-
-                            {loading
-                                ? "..."
-                                : academicYearTransactions}
-
-                        </p>
-
-
-                        <p className="mt-1 text-xs text-cyan-600">
-
-                            Recorded receipts for AY {selectedAcademicYear}
-
-                        </p>
-
-                    </div>
-
-                </div>
-
-
-                {/* ACADEMIC YEAR CHART */}
-
-                <div className="mt-8">
-
-                    <div className="flex items-center justify-between mb-4">
-
-                        <p className="text-sm font-semibold text-gray-700">
-
-                            Monthly Collection
-
-                        </p>
-
-                        <span className="text-xs text-gray-400">
-
-                            AY {selectedAcademicYear}
-
-                        </span>
-
-                    </div>
-
-
-                    <div className="relative h-64 border-l border-b border-gray-200 px-3 md:px-6">
-
-                        <div className="absolute inset-x-0 top-0 border-t border-gray-100" />
-
-                        <div className="absolute inset-x-0 top-1/4 border-t border-gray-100" />
-
-                        <div className="absolute inset-x-0 top-1/2 border-t border-gray-100" />
-
-                        <div className="absolute inset-x-0 top-3/4 border-t border-gray-100" />
-
-
-                        <div className="relative z-10 h-full flex items-end justify-around gap-2 md:gap-4">
-
-                            {academicYearChart.map(
-                                (month) => {
-
-                                    const height =
-                                        month.amount > 0
-
-                                            ? Math.max(
-
-                                                (
-                                                    month.amount /
-                                                    maximumAcademicCollection
-                                                ) * 100,
-
-                                                3
-
-                                            )
-
-                                            : 3;
-
-
-                                    return (
-
-                                        <div
-                                            key={month.month}
-                                            className="flex-1 h-full flex flex-col items-center justify-end group"
-                                        >
-
-                                            <div className="mb-2 text-[9px] md:text-[10px] font-semibold text-blue-700 opacity-0 group-hover:opacity-100 transition whitespace-nowrap">
-
-                                                {formatCurrency(
-                                                    month.amount
-                                                )}
-
-                                            </div>
-
-
-                                            <div className="w-full max-w-[42px] h-[75%] flex items-end">
-
-                                                <div
-                                                    className="w-full rounded-t-lg bg-gradient-to-t from-blue-800 to-blue-500"
-                                                    style={{
-                                                        height: `${height}%`,
-                                                        opacity:
-                                                            month.amount > 0
-                                                                ? 1
-                                                                : 0.2,
-                                                    }}
-                                                />
-
-                                            </div>
-
-
-                                            <div className="mt-3 text-[10px] md:text-xs font-medium text-gray-500">
-
-                                                {month.shortMonth}
-
-                                            </div>
-
-                                        </div>
-
-                                    );
-
-                                }
-                            )}
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            {/* =========================================================
-                RECENT TRANSACTIONS
-            ========================================================= */}
-
-            <section className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-
-                <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-
-                    <div className="flex items-center gap-3">
-                        <div>
-                            <h2 className="font-bold text-gray-900">
-                                Recent Transactions
-                            </h2>
-                            <p className="text-xs text-gray-500 mt-1">
-                                Latest official receipts
-                            </p>
-                        </div>
-                        <Link
-                            to="/audit-trail"
-                            className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition"
-                        >
-                            <ShieldCheck size={14} />
-                            Full Audit Trail
-                        </Link>
-                    </div>
-
-
-                    <div className="flex items-center gap-3">
-
-                        <span className="text-xs text-gray-400">
-
-                            Page {recentPage + 1} of {totalRecentPages}
-
-                        </span>
-
-
-                        <button
-                            type="button"
-                            onClick={() => {
-
-                                setRecentPage(
-                                    Math.max(
-                                        0,
-                                        recentPage - 1
-                                    )
-                                );
-
-                            }}
-                            disabled={recentPage === 0}
-                            className="h-8 w-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-
-                            <ChevronLeft size={17} />
-
-                        </button>
-
-
-                        <button
-                            type="button"
-                            onClick={() => {
-
-                                setRecentPage(
-                                    Math.min(
-                                        totalRecentPages - 1,
-                                        recentPage + 1
-                                    )
-                                );
-
-                            }}
-                            disabled={
-                                recentPage >=
-                                totalRecentPages - 1
-                            }
-                            className="h-8 w-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-
-                            <ChevronRight size={17} />
-
-                        </button>
-
-                    </div>
-
-                </div>
-
-
-                <div className="overflow-x-auto">
-
-                    <table className="w-full">
-
-                        <thead className="bg-gray-50">
-
-                            <tr>
-
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase">
-
-                                    Receipt
-
-                                </th>
-
-
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase">
-
-                                    Payer
-
-                                </th>
-
-
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase">
-
-                                    Purpose
-
-                                </th>
-
-
-                                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase">
-
-                                    Date
-
-                                </th>
-
-
-                                <th className="text-right px-6 py-3 text-xs font-semibold text-gray-500 uppercase">
-
-                                    Amount
-
-                                </th>
-
-                            </tr>
-
-                        </thead>
-
-
-                        <tbody className="divide-y divide-gray-100">
-
-                            {loading ? (
-
-                                <tr>
-
-                                    <td
-                                        colSpan="5"
-                                        className="px-6 py-10 text-center text-gray-500"
-                                    >
-
-                                        Loading transactions...
-
-                                    </td>
-
-                                </tr>
-
-                            ) : visibleRecentTransactions.length === 0 ? (
-
-                                <tr>
-
-                                    <td
-                                        colSpan="5"
-                                        className="px-6 py-10 text-center text-gray-500"
-                                    >
-
-                                        No transactions found.
-
-                                    </td>
-
-                                </tr>
-
-                            ) : (
-
-                                visibleRecentTransactions.map(
-                                    (receipt) => (
-
-                                        <tr
-                                            key={receipt.id}
-                                            className="hover:bg-gray-50 transition"
-                                        >
-
-                                            <td className="px-6 py-4">
-
-                                                <span className="font-bold text-blue-800">
-
-                                                    {
-                                                        receipt.receipt_number ||
-                                                        "—"
-                                                    }
-
-                                                </span>
-
-                                            </td>
-
-
-                                            <td className="px-6 py-4">
-
-                                                <span className="font-medium text-gray-900">
-
-                                                    {
-                                                        receipt.payer_name ||
-                                                        "—"
-                                                    }
-
-                                                </span>
-
-                                            </td>
-
-
-                                            <td className="px-6 py-4">
-
-                                                <span className="text-sm text-gray-600">
-
-                                                    {
-                                                        receipt.purpose ||
-                                                        receipt.description ||
-                                                        "—"
-                                                    }
-
-                                                </span>
-
-                                            </td>
-
-
-                                            <td className="px-6 py-4 text-sm text-gray-600">
-
-                                                {formatDate(
-                                                    getReceiptDate(
-                                                        receipt
-                                                    )
-                                                )}
-
-                                            </td>
-
-
-                                            <td className="px-6 py-4 text-right">
-
-                                                <span className="font-semibold text-gray-900">
-
-                                                    {formatCurrency(
-                                                        getReceiptAmount(
-                                                            receipt
-                                                        )
-                                                    )}
-
-                                                </span>
-
-                                            </td>
-
-                                        </tr>
-
-                                    )
-                                )
-
-                            )}
-
-                        </tbody>
-
-                    </table>
-
-                </div>
-
-
-                {/* PAGINATION FOOTER */}
-
-                <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
-
-                    <p className="text-xs text-gray-400">
-
-                        Showing{" "}
-
-                        {visibleRecentTransactions.length}
-
-                        {" "}of{" "}
-
-                        {sortedTransactions.length}
-
-                        {" "}transactions
-
+        <span
+            className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset ${
+                styles[normalized] || styles.Recorded
+            }`}
+        >
+            {normalized}
+        </span>
+    );
+}
+
+function SummaryCard({
+    title,
+    value,
+    subtitle,
+    icon: Icon,
+    color,
+    loading,
+}) {
+    const iconStyles = {
+        blue: "bg-blue-50 text-blue-700",
+        teal: "bg-teal-50 text-teal-700",
+        orange: "bg-orange-50 text-orange-700",
+        violet: "bg-violet-50 text-violet-700",
+    };
+
+    return (
+        <section className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm transition hover:shadow-md">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-xs font-medium leading-5 text-slate-500">
+                        {title}
                     </p>
 
+                    <p className="mt-3 break-words text-2xl font-bold tracking-tight text-slate-900 sm:text-[27px]">
+                        {loading ? (
+                            <span className="text-base text-slate-400">
+                                Loading...
+                            </span>
+                        ) : (
+                            value
+                        )}
+                    </p>
 
-                    <div className="flex items-center gap-2">
-
-                        <button
-                            type="button"
-                            onClick={() => {
-
-                                setRecentPage(
-                                    recentPage - 1
-                                );
-
-                            }}
-                            disabled={recentPage === 0}
-                            className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-
-                            <ChevronLeft size={15} />
-
-                            Previous
-
-                        </button>
-
-
-                        <button
-                            type="button"
-                            onClick={() => {
-
-                                setRecentPage(
-                                    recentPage + 1
-                                );
-
-                            }}
-                            disabled={
-                                recentPage >=
-                                totalRecentPages - 1
-                            }
-                            className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-
-                            Next
-
-                            <ChevronRight size={15} />
-
-                        </button>
-
-                    </div>
-
+                    <p className="mt-2 text-xs text-slate-500">
+                        {subtitle}
+                    </p>
                 </div>
 
-            </section>
+                <div
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
+                        iconStyles[color] || iconStyles.blue
+                    }`}
+                >
+                    <Icon size={21} strokeWidth={1.8} />
+                </div>
+            </div>
+        </section>
+    );
+}
 
+function QuickAction({ to, icon: Icon, title, description, color }) {
+    const colors = {
+        blue: "bg-blue-50 text-blue-700 group-hover:bg-blue-100",
+        teal: "bg-teal-50 text-teal-700 group-hover:bg-teal-100",
+        violet: "bg-violet-50 text-violet-700 group-hover:bg-violet-100",
+        orange: "bg-orange-50 text-orange-700 group-hover:bg-orange-100",
+    };
 
-            {/* =========================================================
-                SYSTEM STATUS
-            ========================================================= */}
+    return (
+        <Link
+            to={to}
+            className="group flex items-center gap-3 rounded-xl border border-slate-200 p-3 transition hover:border-blue-200 hover:bg-slate-50"
+        >
+            <span
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition ${
+                    colors[color] || colors.blue
+                }`}
+            >
+                <Icon size={19} />
+            </span>
 
-            <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+            <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-slate-800">
+                    {title}
+                </span>
+                <span className="mt-0.5 block text-xs text-slate-500">
+                    {description}
+                </span>
+            </span>
 
-                <div className="flex items-center justify-between mb-4">
+            <ArrowUpRight
+                size={16}
+                className="shrink-0 text-slate-400 transition group-hover:text-blue-700"
+            />
+        </Link>
+    );
+}
 
-                    <div>
+function EmptyState({ icon: Icon = Receipt, message }) {
+    return (
+        <div className="px-4 py-12 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                <Icon size={23} />
+            </div>
+            <p className="mt-3 text-sm font-semibold text-slate-700">
+                {message}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+                Records will appear here when available.
+            </p>
+        </div>
+    );
+}
 
-                        <h2 className="font-bold text-gray-900">
+function ActivityItem({ activity }) {
+    const action = String(activity?.action || "ACTIVITY")
+        .replace(/_/g, " ")
+        .toUpperCase();
 
-                            System Status
+    const actor =
+        activity?.user_name ||
+        activity?.user?.name ||
+        activity?.actor?.name ||
+        (activity?.user_id
+            ? `User #${activity.user_id}`
+            : "System");
 
-                        </h2>
+    const timestamp = activity?.created_at || activity?.action_at;
 
+    const date = timestamp ? new Date(timestamp) : null;
 
-                        <p className="text-xs text-gray-500 mt-1">
+    const validDate = date && !Number.isNaN(date.getTime());
 
-                            UniTeq is connected to the financial database.
+    const actionColor =
+        action.includes("DELETE") || action.includes("REJECT")
+            ? "bg-rose-50 text-rose-700"
+            : action.includes("CREATE") || action.includes("APPROV")
+              ? "bg-emerald-50 text-emerald-700"
+              : "bg-blue-50 text-blue-700";
 
-                        </p>
+    return (
+        <div className="flex gap-3 px-5 py-4 transition hover:bg-slate-50">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                <Activity size={17} />
+            </div>
 
-                    </div>
-
-
-                    <span className="inline-flex items-center gap-2 text-xs font-semibold bg-green-100 text-green-700 px-3 py-1.5 rounded-full">
-
-                        <span className="h-2 w-2 rounded-full bg-green-500" />
-
-                        Connected
-
+            <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-800">
+                        {actor}
                     </span>
 
+                    <span
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${actionColor}`}
+                    >
+                        {action}
+                    </span>
                 </div>
 
+                <p className="mt-1 break-words text-xs leading-5 text-slate-600">
+                    {activity?.description || "Activity recorded"}
+                </p>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-
-                    <div className="bg-blue-50 rounded-xl p-4">
-
-                        <p className="text-xs text-blue-600 uppercase font-semibold">
-
-                            Receipts
-
-                        </p>
-
-
-                        <p className="text-xl font-bold text-blue-900 mt-1">
-
-                            {receipts.length}
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="bg-cyan-50 rounded-xl p-4">
-
-                        <p className="text-xs text-cyan-600 uppercase font-semibold">
-
-                            This Month
-
-                        </p>
-
-
-                        <p className="text-xl font-bold text-cyan-900 mt-1">
-
-                            {transactionsThisMonth}
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="bg-amber-50 rounded-xl p-4">
-
-                        <p className="text-xs text-amber-600 uppercase font-semibold">
-
-                            Pending
-
-                        </p>
-
-
-                        <p className="text-xl font-bold text-amber-900 mt-1">
-
-                            {pendingTransactions}
-
-                        </p>
-
-                    </div>
-
-
-                    <div className="bg-purple-50 rounded-xl p-4">
-
-                        <p className="text-xs text-purple-600 uppercase font-semibold">
-
-                            Vouchers
-
-                        </p>
-
-
-                        <p className="text-xl font-bold text-purple-900 mt-1">
-
-                            {vouchers.length}
-
-                        </p>
-
-                    </div>
-
-                </div>
-
-            </section>
-
+                <p className="mt-1 text-[11px] text-slate-400">
+                    {activity?.module || "General"}
+                    {validDate
+                        ? ` · ${date.toLocaleString("en-PH", {
+                              month: "short",
+                              day: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                          })}`
+                        : ""}
+                </p>
+            </div>
         </div>
+    );
+}
 
+export default function Dashboard() {
+    const [receipts, setReceipts] = useState([]);
+    const [vouchers, setVouchers] = useState([]);
+    const [activities, setActivities] = useState([]);
+
+    const [loading, setLoading] = useState(true);
+    const [activityLoading, setActivityLoading] = useState(true);
+
+    const [error, setError] = useState("");
+    const [activityError, setActivityError] = useState("");
+
+    const [search, setSearch] = useState("");
+    const [typeFilter, setTypeFilter] = useState("All");
+    const [statusFilter, setStatusFilter] = useState("All");
+    const [page, setPage] = useState(0);
+
+    const currentUser = useMemo(() => {
+        try {
+            return JSON.parse(
+                localStorage.getItem("uniteq_user") ||
+                    sessionStorage.getItem("uniteq_user") ||
+                    "null"
+            );
+        } catch {
+            return null;
+        }
+    }, []);
+
+    const isAdministrator =
+        String(currentUser?.role || "").toLowerCase() ===
+        "system administrator";
+
+    const today = new Date();
+
+    const loadDashboardData = useCallback(async () => {
+        setLoading(true);
+        setError("");
+
+        try {
+            const results = await Promise.allSettled([
+                api.get("/receipts"),
+                api.get("/vouchers"),
+            ]);
+
+            const receiptsResult = results[0];
+            const vouchersResult = results[1];
+
+            if (
+                receiptsResult.status === "rejected" &&
+                vouchersResult.status === "rejected"
+            ) {
+                throw new Error(
+                    "Unable to load financial records. Check your connection and try again."
+                );
+            }
+
+            const receiptRecords =
+                receiptsResult.status === "fulfilled"
+                    ? getArray(receiptsResult.value.data)
+                    : [];
+
+            const voucherRecords =
+                vouchersResult.status === "fulfilled"
+                    ? getArray(vouchersResult.value.data)
+                    : [];
+
+            setReceipts(receiptRecords);
+            setVouchers(voucherRecords);
+
+            if (
+                receiptsResult.status === "rejected" ||
+                vouchersResult.status === "rejected"
+            ) {
+                setError(
+                    "Some financial records could not be loaded. The summary may be incomplete."
+                );
+            }
+        } catch (err) {
+            console.error("Dashboard loading error:", err);
+            setReceipts([]);
+            setVouchers([]);
+            setError(
+                err.message ||
+                    "Unable to load dashboard data. Please try again."
+            );
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    const loadActivities = useCallback(async () => {
+        setActivityLoading(true);
+        setActivityError("");
+
+        try {
+            const response = await api.get("/activity-logs/summary");
+            const data = response.data;
+
+            setActivities(
+                Array.isArray(data?.recent)
+                    ? data.recent
+                    : Array.isArray(data?.logs)
+                      ? data.logs
+                      : []
+            );
+        } catch (err) {
+            console.error("Activity loading error:", err);
+            setActivities([]);
+            setActivityError(
+                "Recent staff activity is currently unavailable."
+            );
+        } finally {
+            setActivityLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadDashboardData();
+        loadActivities();
+    }, [loadDashboardData, loadActivities]);
+
+    const totalCollections = useMemo(
+        () => receipts.reduce((sum, item) => sum + getReceiptAmount(item), 0),
+        [receipts]
     );
 
+    const totalDisbursements = useMemo(
+        () => vouchers.reduce((sum, item) => sum + getVoucherAmount(item), 0),
+        [vouchers]
+    );
+
+    const todaysCollections = useMemo(() => {
+        return receipts.reduce((sum, item) => {
+            const date = parseDate(getDate(item));
+
+            if (
+                date &&
+                date.getFullYear() === today.getFullYear() &&
+                date.getMonth() === today.getMonth() &&
+                date.getDate() === today.getDate()
+            ) {
+                return sum + getReceiptAmount(item);
+            }
+
+            return sum;
+        }, 0);
+    }, [receipts, today.getDate(), today.getMonth(), today.getFullYear()]);
+
+    const pendingVouchers = useMemo(() => {
+        return vouchers.filter((item) => {
+            const status = normalizeStatus(item.status);
+
+            return (
+                status === "Pending" ||
+                status === "Under Review" ||
+                status === "Returned"
+            );
+        }).length;
+    }, [vouchers]);
+
+    const transactions = useMemo(() => {
+        const receiptItems = receipts.map((item) => ({
+            id: item.id,
+            reference: getReceiptNumber(item),
+            party: getReceiptName(item),
+            date: getDate(item),
+            amount: getReceiptAmount(item),
+            status: item.status || "Recorded",
+            type: "Collection",
+            route: "/receipts",
+            searchText: [
+                getReceiptNumber(item),
+                getReceiptName(item),
+                item.purpose,
+                item.description,
+                item.status,
+                "receipt collection",
+            ]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase(),
+        }));
+
+        const voucherItems = vouchers.map((item) => ({
+            id: item.id,
+            reference: getVoucherNumber(item),
+            party: getVoucherName(item),
+            date: getDate(item),
+            amount: getVoucherAmount(item),
+            status: item.status || "Pending",
+            type: "Disbursement",
+            route: "/vouchers",
+            searchText: [
+                getVoucherNumber(item),
+                getVoucherName(item),
+                item.purpose,
+                item.description,
+                item.status,
+                "voucher disbursement",
+            ]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase(),
+        }));
+
+        return [...receiptItems, ...voucherItems].sort((a, b) => {
+            const dateA = parseDate(a.date)?.getTime() || 0;
+            const dateB = parseDate(b.date)?.getTime() || 0;
+
+            if (dateA !== dateB) return dateB - dateA;
+
+            return Number(b.id || 0) - Number(a.id || 0);
+        });
+    }, [receipts, vouchers]);
+
+    const filteredTransactions = useMemo(() => {
+        const query = search.trim().toLowerCase();
+
+        return transactions.filter((item) => {
+            const matchesSearch =
+                !query || item.searchText.includes(query);
+
+            const matchesType =
+                typeFilter === "All" || item.type === typeFilter;
+
+            const matchesStatus =
+                statusFilter === "All" ||
+                normalizeStatus(item.status) === statusFilter;
+
+            return matchesSearch && matchesType && matchesStatus;
+        });
+    }, [transactions, search, typeFilter, statusFilter]);
+
+    const totalPages = Math.max(
+        1,
+        Math.ceil(filteredTransactions.length / PAGE_SIZE)
+    );
+
+    const visibleTransactions = filteredTransactions.slice(
+        page * PAGE_SIZE,
+        (page + 1) * PAGE_SIZE
+    );
+
+    useEffect(() => {
+        setPage(0);
+    }, [search, typeFilter, statusFilter]);
+
+    useEffect(() => {
+        if (page >= totalPages) {
+            setPage(Math.max(0, totalPages - 1));
+        }
+    }, [page, totalPages]);
+
+    function exportTransactions() {
+        const headers = [
+            "Date",
+            "Reference",
+            "Type",
+            "Payee or Source",
+            "Status",
+            "Amount (PHP)",
+        ];
+
+        const rows = filteredTransactions.map((item) => [
+            displayDate(item.date),
+            item.reference,
+            item.type,
+            item.party,
+            normalizeStatus(item.status),
+            item.amount.toFixed(2),
+        ]);
+
+        const csvValue = (value) =>
+            `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+        const csv = [headers, ...rows]
+            .map((row) => row.map(csvValue).join(","))
+            .join("\r\n");
+
+        const blob = new Blob(["\uFEFF", csv], {
+            type: "text/csv;charset=utf-8;",
+        });
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+
+        link.href = url;
+        link.download = `uniteq-transactions-${new Date()
+            .toISOString()
+            .slice(0, 10)}.csv`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    return (
+        <div className="mx-auto w-full max-w-[1600px] space-y-6">
+            {/* PAGE HEADER */}
+            <section className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                        <Landmark size={14} />
+                        University of Abra
+                        <span className="text-slate-300">/</span>
+                        Cashier's Unit
+                    </div>
+
+                    <h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                        Financial Overview
+                    </h1>
+
+                    <p className="mt-1.5 text-sm text-slate-500">
+                        Monitor collections, disbursements, and transaction
+                        status in one workspace.
+                    </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            loadDashboardData();
+                            loadActivities();
+                        }}
+                        disabled={loading || activityLoading}
+                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                        <RefreshCw
+                            size={16}
+                            className={
+                                loading || activityLoading
+                                    ? "animate-spin"
+                                    : ""
+                            }
+                        />
+                        Refresh
+                    </button>
+
+                    <Link
+                        to="/collections"
+                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800"
+                    >
+                        <Plus size={17} />
+                        New Transaction
+                    </Link>
+                </div>
+            </section>
+
+            {/* DATA LOAD ERROR */}
+            {error && (
+                <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-2">
+                        <CircleAlert
+                            size={18}
+                            className="mt-0.5 shrink-0"
+                        />
+                        <p>{error}</p>
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={loadDashboardData}
+                        className="self-start rounded-lg border border-amber-300 px-3 py-2 text-xs font-semibold hover:bg-amber-100"
+                    >
+                        Try again
+                    </button>
+                </div>
+            )}
+
+            {/* FINANCIAL SUMMARY */}
+            <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <SummaryCard
+                    title="Today's Collections"
+                    value={money(todaysCollections)}
+                    subtitle="Recorded for today"
+                    icon={Wallet}
+                    color="teal"
+                    loading={loading}
+                />
+
+                <SummaryCard
+                    title="Total Collections"
+                    value={money(totalCollections)}
+                    subtitle={`${receipts.length} receipt records`}
+                    icon={ArrowDownLeft}
+                    color="blue"
+                    loading={loading}
+                />
+
+                <SummaryCard
+                    title="Total Disbursements"
+                    value={money(totalDisbursements)}
+                    subtitle={`${vouchers.length} voucher records`}
+                    icon={ArrowUpRight}
+                    color="orange"
+                    loading={loading}
+                />
+
+                <SummaryCard
+                    title="Pending Vouchers"
+                    value={pendingVouchers.toLocaleString("en-PH")}
+                    subtitle="Awaiting further action"
+                    icon={Clock3}
+                    color="violet"
+                    loading={loading}
+                />
+            </section>
+
+            {/* WORKSPACE GRID */}
+            <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
+                {/* TRANSACTIONS */}
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                    <div className="flex flex-col gap-4 border-b border-slate-100 p-5 sm:p-6">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <h2 className="text-base font-bold text-slate-900">
+                                    Recent Transactions
+                                </h2>
+                                <p className="mt-1 text-xs text-slate-500">
+                                    Collections and disbursement vouchers
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={exportTransactions}
+                                disabled={filteredTransactions.length === 0}
+                                className="inline-flex min-h-9 items-center justify-center gap-2 self-start rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 sm:self-auto"
+                            >
+                                Export CSV
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(180px,1fr)_160px_160px]">
+                            <div className="flex min-h-10 items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-50">
+                                <Search
+                                    size={16}
+                                    className="shrink-0 text-slate-400"
+                                />
+
+                                <input
+                                    type="search"
+                                    value={search}
+                                    onChange={(event) =>
+                                        setSearch(event.target.value)
+                                    }
+                                    placeholder="Search reference or payee..."
+                                    className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
+                                />
+                            </div>
+
+                            <select
+                                value={typeFilter}
+                                onChange={(event) =>
+                                    setTypeFilter(event.target.value)
+                                }
+                                aria-label="Filter transaction type"
+                                className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-400"
+                            >
+                                <option value="All">All transaction types</option>
+                                <option value="Collection">Collections</option>
+                                <option value="Disbursement">
+                                    Disbursements
+                                </option>
+                            </select>
+
+                            <select
+                                value={statusFilter}
+                                onChange={(event) =>
+                                    setStatusFilter(event.target.value)
+                                }
+                                aria-label="Filter transaction status"
+                                className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-blue-400"
+                            >
+                                <option value="All">All statuses</option>
+                                <option value="Completed">Completed</option>
+                                <option value="Approved">Approved</option>
+                                <option value="Pending">Pending</option>
+                                <option value="Under Review">
+                                    Under Review
+                                </option>
+                                <option value="Returned">Returned</option>
+                                <option value="Rejected">Rejected</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                        <table className="w-full min-w-[760px] border-collapse text-left">
+                            <thead>
+                                <tr className="border-b border-slate-100 bg-slate-50/80">
+                                    <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        Date
+                                    </th>
+                                    <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        Reference
+                                    </th>
+                                    <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        Payee / Source
+                                    </th>
+                                    <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        Type
+                                    </th>
+                                    <th className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        Status
+                                    </th>
+                                    <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        Amount
+                                    </th>
+                                    <th className="px-5 py-3 text-center text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                        View
+                                    </th>
+                                </tr>
+                            </thead>
+
+                            <tbody className="divide-y divide-slate-100">
+                                {loading ? (
+                                    <tr>
+                                        <td
+                                            colSpan={7}
+                                            className="px-5 py-12 text-center text-sm text-slate-500"
+                                        >
+                                            <RefreshCw
+                                                size={19}
+                                                className="mx-auto mb-2 animate-spin text-blue-600"
+                                            />
+                                            Loading transactions...
+                                        </td>
+                                    </tr>
+                                ) : visibleTransactions.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={7}>
+                                            <EmptyState
+                                                icon={Receipt}
+                                                message={
+                                                    transactions.length === 0
+                                                        ? "No transactions yet"
+                                                        : "No matching transactions"
+                                                }
+                                            />
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    visibleTransactions.map((item) => (
+                                        <tr
+                                            key={`${item.type}-${item.id}`}
+                                            className="transition hover:bg-blue-50/30"
+                                        >
+                                            <td className="whitespace-nowrap px-5 py-4 text-xs text-slate-500">
+                                                {displayDate(item.date)}
+                                            </td>
+
+                                            <td className="whitespace-nowrap px-5 py-4">
+                                                <span className="text-xs font-semibold text-slate-800">
+                                                    {item.reference}
+                                                </span>
+                                            </td>
+
+                                            <td className="max-w-[220px] px-5 py-4">
+                                                <p className="truncate text-xs font-medium text-slate-800">
+                                                    {item.party}
+                                                </p>
+                                            </td>
+
+                                            <td className="whitespace-nowrap px-5 py-4">
+                                                <span
+                                                    className={`inline-flex items-center gap-1.5 text-xs ${
+                                                        item.type === "Collection"
+                                                            ? "text-teal-700"
+                                                            : "text-orange-700"
+                                                    }`}
+                                                >
+                                                    {item.type === "Collection" ? (
+                                                        <ArrowDownLeft size={14} />
+                                                    ) : (
+                                                        <ArrowUpRight size={14} />
+                                                    )}
+                                                    {item.type}
+                                                </span>
+                                            </td>
+
+                                            <td className="px-5 py-4">
+                                                <StatusBadge
+                                                    status={item.status}
+                                                />
+                                            </td>
+
+                                            <td className="whitespace-nowrap px-5 py-4 text-right text-xs font-semibold text-slate-800">
+                                                {money(item.amount)}
+                                            </td>
+
+                                            <td className="px-5 py-4 text-center">
+                                                <Link
+                                                    to={item.route}
+                                                    aria-label={`View ${item.reference}`}
+                                                    title="View records"
+                                                    className="inline-flex rounded-lg p-2 text-slate-400 transition hover:bg-blue-50 hover:text-blue-700"
+                                                >
+                                                    <Eye size={16} />
+                                                </Link>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="flex flex-col gap-3 border-t border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs text-slate-500">
+                            Showing{" "}
+                            {filteredTransactions.length === 0
+                                ? 0
+                                : page * PAGE_SIZE + 1}
+                            –
+                            {Math.min(
+                                (page + 1) * PAGE_SIZE,
+                                filteredTransactions.length
+                            )}{" "}
+                            of {filteredTransactions.length} records
+                        </p>
+
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setPage((current) =>
+                                        Math.max(0, current - 1)
+                                    )
+                                }
+                                disabled={page === 0}
+                                className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                <ChevronLeft size={15} />
+                                Previous
+                            </button>
+
+                            <span className="px-1 text-xs text-slate-500">
+                                {page + 1} / {totalPages}
+                            </span>
+
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setPage((current) =>
+                                        Math.min(totalPages - 1, current + 1)
+                                    )
+                                }
+                                disabled={page >= totalPages - 1}
+                                className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Next
+                                <ChevronRight size={15} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* QUICK ACTIONS */}
+                <aside className="space-y-5">
+                    <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+                        <h2 className="text-base font-bold text-slate-900">
+                            Quick Actions
+                        </h2>
+
+                        <p className="mt-1 text-xs text-slate-500">
+                            Common cashier operations
+                        </p>
+
+                        <div className="mt-4 space-y-3">
+                            <QuickAction
+                                to="/collections"
+                                icon={Plus}
+                                title="New Collection"
+                                description="Open collection workspace"
+                                color="teal"
+                            />
+
+                            <QuickAction
+                                to="/receipts"
+                                icon={Receipt}
+                                title="Official Receipts"
+                                description="View receipt records"
+                                color="blue"
+                            />
+
+                            <QuickAction
+                                to="/vouchers"
+                                icon={FileText}
+                                title="Disbursement Vouchers"
+                                description="Review voucher records"
+                                color="orange"
+                            />
+
+                            <QuickAction
+                                to="/reconciliation"
+                                icon={FileCheck}
+                                title="Reconciliation"
+                                description="Review financial records"
+                                color="violet"
+                            />
+
+                            <QuickAction
+                                to="/reports"
+                                icon={TrendingUp}
+                                title="Financial Reports"
+                                description="Open reporting workspace"
+                                color="blue"
+                            />
+                        </div>
+                    </section>
+
+                    <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                        <div className="flex items-center justify-between border-b border-slate-100 p-5">
+                            <div>
+                                <h2 className="text-sm font-bold text-slate-900">
+                                    Pending Overview
+                                </h2>
+                                <p className="mt-1 text-xs text-slate-500">
+                                    Current voucher records
+                                </p>
+                            </div>
+
+                            <Clock3
+                                size={19}
+                                className="text-amber-600"
+                            />
+                        </div>
+
+                        <div className="space-y-4 p-5">
+                            <div className="flex items-center justify-between gap-3">
+                                <span className="flex items-center gap-2 text-xs text-slate-600">
+                                    <span className="h-2 w-2 rounded-full bg-amber-400" />
+                                    Pending / review / returned
+                                </span>
+                                <span className="text-sm font-bold text-slate-900">
+                                    {loading ? "—" : pendingVouchers}
+                                </span>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-3">
+                                <span className="flex items-center gap-2 text-xs text-slate-600">
+                                    <span className="h-2 w-2 rounded-full bg-blue-500" />
+                                    Total receipt records
+                                </span>
+                                <span className="text-sm font-bold text-slate-900">
+                                    {loading ? "—" : receipts.length}
+                                </span>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-3">
+                                <span className="flex items-center gap-2 text-xs text-slate-600">
+                                    <span className="h-2 w-2 rounded-full bg-orange-500" />
+                                    Total voucher records
+                                </span>
+                                <span className="text-sm font-bold text-slate-900">
+                                    {loading ? "—" : vouchers.length}
+                                </span>
+                            </div>
+
+                            <Link
+                                to="/vouchers"
+                                className="flex min-h-10 items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 text-xs font-semibold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
+                            >
+                                Open Vouchers
+                                <ArrowUpRight size={15} />
+                            </Link>
+                        </div>
+                    </section>
+
+                    <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-white p-5">
+                        <div className="flex items-center gap-2">
+                            <ShieldCheck
+                                size={19}
+                                className="text-blue-700"
+                            />
+                            <h2 className="text-sm font-bold text-slate-900">
+                                Responsible Access
+                            </h2>
+                        </div>
+
+                        <p className="mt-2 text-xs leading-5 text-slate-600">
+                            Review financial information only through your
+                            authorized account. Verify transaction details
+                            before proceeding with official actions.
+                        </p>
+
+                        <div className="mt-3 flex items-center gap-1.5 text-[11px] font-medium text-blue-700">
+                            <CheckCircle2 size={14} />
+                            Role-aware workspace
+                        </div>
+                    </section>
+                </aside>
+            </section>
+
+            {/* RECENT STAFF ACTIVITY */}
+            <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+                <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                    <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700">
+                            <Activity size={20} />
+                        </div>
+
+                        <div>
+                            <h2 className="text-base font-bold text-slate-900">
+                                Recent Staff Activity
+                            </h2>
+                            <p className="mt-1 text-xs text-slate-500">
+                                Latest activities returned by the audit API
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-xs text-slate-500">
+                            {activities.length}{" "}
+                            {activities.length === 1
+                                ? "activity"
+                                : "activities"}
+                        </span>
+
+                        <button
+                            type="button"
+                            onClick={loadActivities}
+                            disabled={activityLoading}
+                            className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        >
+                            <RefreshCw
+                                size={14}
+                                className={
+                                    activityLoading ? "animate-spin" : ""
+                                }
+                            />
+                            Refresh
+                        </button>
+
+                        <Link
+                            to="/audit-trail"
+                            className="inline-flex min-h-9 items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900"
+                        >
+                            Full audit trail
+                            <ArrowUpRight size={14} />
+                        </Link>
+                    </div>
+                </div>
+
+                {activityError && (
+                    <div className="m-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                        {activityError}
+                    </div>
+                )}
+
+                {activityLoading ? (
+                    <div className="flex items-center justify-center gap-2 px-5 py-10 text-sm text-slate-500">
+                        <RefreshCw
+                            size={17}
+                            className="animate-spin"
+                        />
+                        Loading recent activity...
+                    </div>
+                ) : activities.length === 0 ? (
+                    <EmptyState
+                        icon={Activity}
+                        message="No recent staff activity available"
+                    />
+                ) : (
+                    <div className="divide-y divide-slate-100">
+                        {activities.slice(0, 5).map((activity, index) => (
+                            <ActivityItem
+                                key={
+                                    activity.id ??
+                                    `${activity.user_id || "user"}-${index}`
+                                }
+                                activity={activity}
+                            />
+                        ))}
+                    </div>
+                )}
+            </section>
+
+            {/* FOOTER */}
+            <footer className="flex flex-col gap-2 border-t border-slate-200 pt-4 text-[11px] text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+                <p>
+                    UniTeq · Financial Transactions Management
+                </p>
+
+                <p className="flex items-center gap-1.5">
+                    <CalendarDays size={13} />
+                    {today.toLocaleDateString("en-PH", {
+                        month: "long",
+                        day: "numeric",
+                        year: "numeric",
+                    })}
+                    <span className="px-1">·</span>
+                    {currentUser?.name || "Authorized User"}
+                    {isAdministrator ? " · Administrator" : ""}
+                </p>
+            </footer>
+        </div>
+    );
 }

@@ -1,3 +1,4 @@
+
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import Login from "./pages/Login";
@@ -11,27 +12,20 @@ import Reports from "./pages/Reports";
 import PendingBalances from "./pages/PendingBalances";
 import Users from "./pages/Users";
 import AuditTrail from "./pages/AuditTrail";
+import Reconciliation from "./pages/Reconciliation";
 
 export default function App() {
     return (
         <BrowserRouter>
             <Routes>
-
-                {/* =====================================================
-                    LOGIN
-                ===================================================== */}
-
+                {/* Login */}
                 <Route
                     path="/"
                     element={<Login />}
                 />
 
-                {/* =====================================================
-                    PROTECTED SYSTEM
-                ===================================================== */}
-
+                {/* Protected system layout */}
                 <Route element={<MainLayout />}>
-
                     <Route
                         path="/dashboard"
                         element={<Dashboard />}
@@ -53,6 +47,11 @@ export default function App() {
                     />
 
                     <Route
+                        path="/reconciliation"
+                        element={<Reconciliation />}
+                    />
+
+                    <Route
                         path="/reports"
                         element={<Reports />}
                     />
@@ -71,23 +70,13 @@ export default function App() {
                         path="/audit-trail"
                         element={<AuditTrail />}
                     />
-
                 </Route>
 
-                {/* =====================================================
-                    UNKNOWN PAGE
-                ===================================================== */}
-
+                {/* Unknown page */}
                 <Route
                     path="*"
-                    element={
-                        <Navigate
-                            to="/"
-                            replace
-                        />
-                    }
+                    element={<Navigate to="/" replace />}
                 />
-
             </Routes>
         </BrowserRouter>
     );

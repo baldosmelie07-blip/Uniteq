@@ -6,9 +6,18 @@ use App\Http\Controllers\Controller;
 use App\Models\Voucher;
 use App\Models\ActivityLog;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class VoucherController extends Controller
 {
+    private const ALLOWED_STATUSES = [
+        'Pending',
+        'Under Review',
+        'Approved',
+        'Paid',
+        'Rejected',
+    ];
+
     /**
      * Display all vouchers.
      */
@@ -25,19 +34,23 @@ class VoucherController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'voucherNumber' => 'required|string|unique:vouchers,voucher_number',
+            'voucherNumber' => 'required|string|max:255|unique:vouchers,voucher_number',
             'date' => 'required|date',
             'payee' => 'required|string|max:255',
             'address' => 'nullable|string|max:255',
             'office' => 'nullable|string|max:255',
             'purpose' => 'required|string',
             'amount' => 'required|numeric|min:0',
-            'amountWords' => 'nullable|string|max:255',
+            'amountWords' => 'nullable|string',
             'preparedBy' => 'nullable|string|max:255',
             'checkedBy' => 'nullable|string|max:255',
             'approvedBy' => 'nullable|string|max:255',
             'receivedBy' => 'nullable|string|max:255',
-            'status' => 'nullable|string|max:50',
+            'status' => [
+                'nullable',
+                'string',
+                Rule::in(self::ALLOWED_STATUSES),
+            ],
         ]);
 
         $voucher = Voucher::create([
@@ -56,18 +69,13 @@ class VoucherController extends Controller
             'status' => $validated['status'] ?? 'Pending',
         ]);
 
-        ActivityLog::record(
+        $this->logVoucherActivity(
             'CREATED',
-            'Vouchers',
-            "Created Disbursement Voucher {$voucher->voucher_number} for {$voucher->payee} (Amount: PHP " . number_format($voucher->amount, 2) . ", Status: {$voucher->status})",
-            $voucher->voucher_number,
-            $voucher->id,
+            $voucher,
+            'Created disbursement voucher',
             [
-                'payee' => $voucher->payee,
-                'amount' => $voucher->amount,
-                'status' => $voucher->status,
-                'purpose' => $voucher->purpose,
-                'office' => $voucher->office,
+                'event' => 'voucher_created',
+                'after' => $this->voucherSnapshot($voucher),
             ]
         );
 
@@ -86,77 +94,127 @@ class VoucherController extends Controller
     }
 
     /**
-     * Update a voucher.
+     * Update an existing voucher and record exact changes.
      */
     public function update(Request $request, Voucher $voucher)
     {
         $validated = $request->validate([
-            'voucherNumber' => 'required|string|unique:vouchers,voucher_number,' . $voucher->id,
-            'date' => 'required|date',
-            'payee' => 'required|string|max:255',
-            'address' => 'nullable|string|max:255',
-            'office' => 'nullable|string|max:255',
-            'purpose' => 'required|string',
-            'amount' => 'required|numeric|min:0',
-            'amountWords' => 'nullable|string|max:255',
-            'preparedBy' => 'nullable|string|max:255',
-            'checkedBy' => 'nullable|string|max:255',
-            'approvedBy' => 'nullable|string|max:255',
-            'receivedBy' => 'nullable|string|max:255',
-            'status' => 'nullable|string|max:50',
+            'voucherNumber' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('vouchers', 'voucher_number')
+                    ->ignore($voucher->id),
+            ],
+            'date' => 'sometimes|required|date',
+            'payee' => 'sometimes|required|string|max:255',
+            'address' => 'sometimes|nullable|string|max:255',
+            'office' => 'sometimes|nullable|string|max:255',
+            'purpose' => 'sometimes|required|string',
+            'amount' => 'sometimes|required|numeric|min:0',
+            'amountWords' => 'sometimes|nullable|string',
+            'preparedBy' => 'sometimes|nullable|string|max:255',
+            'checkedBy' => 'sometimes|nullable|string|max:255',
+            'approvedBy' => 'sometimes|nullable|string|max:255',
+            'receivedBy' => 'sometimes|nullable|string|max:255',
+            'status' => [
+                'sometimes',
+                'nullable',
+                'string',
+                Rule::in(self::ALLOWED_STATUSES),
+            ],
         ]);
 
-        $voucher->update([
-            'voucher_number' => $validated['voucherNumber'],
-            'date' => $validated['date'],
-            'payee' => $validated['payee'],
-            'address' => $validated['address'] ?? null,
-            'office' => $validated['office'] ?? null,
-            'purpose' => $validated['purpose'],
-            'amount' => $validated['amount'],
-            'amount_words' => $validated['amountWords'] ?? null,
-            'prepared_by' => $validated['preparedBy'] ?? null,
-            'checked_by' => $validated['checkedBy'] ?? null,
-            'approved_by' => $validated['approvedBy'] ?? null,
-            'received_by' => $validated['receivedBy'] ?? null,
-            'status' => $validated['status'] ?? 'Pending',
-        ]);
+        // Capture the original voucher before updating it.
+        $before = $this->voucherSnapshot($voucher);
 
-        ActivityLog::record(
+        $fieldMap = [
+            'voucherNumber' => 'voucher_number',
+            'date' => 'date',
+            'payee' => 'payee',
+            'address' => 'address',
+            'office' => 'office',
+            'purpose' => 'purpose',
+            'amount' => 'amount',
+            'amountWords' => 'amount_words',
+            'preparedBy' => 'prepared_by',
+            'checkedBy' => 'checked_by',
+            'approvedBy' => 'approved_by',
+            'receivedBy' => 'received_by',
+            'status' => 'status',
+        ];
+
+        $updates = [];
+
+        foreach ($fieldMap as $inputField => $databaseField) {
+            if (array_key_exists($inputField, $validated)) {
+                $updates[$databaseField] = $validated[$inputField];
+            }
+        }
+
+        $voucher->update($updates);
+        $voucher->refresh();
+
+        $after = $this->voucherSnapshot($voucher);
+        $changes = [];
+
+        foreach ($after as $field => $newValue) {
+            $oldValue = $before[$field] ?? null;
+
+            if ($field === 'amount') {
+                $hasChanged = (float) ($oldValue ?? 0)
+                    !== (float) ($newValue ?? 0);
+            } else {
+                $hasChanged = $oldValue !== $newValue;
+            }
+
+            if ($hasChanged) {
+                $changes[$field] = [
+                    'before' => $oldValue,
+                    'after' => $newValue,
+                ];
+            }
+        }
+
+        $this->logVoucherActivity(
             'UPDATED',
-            'Vouchers',
-            "Updated Disbursement Voucher {$voucher->voucher_number} (Payee: {$voucher->payee}, Status: {$voucher->status}, Amount: PHP " . number_format($voucher->amount, 2) . ")",
-            $voucher->voucher_number,
-            $voucher->id,
+            $voucher,
+            'Updated disbursement voucher ' .
+                $voucher->voucher_number . '. ' .
+                count($changes) . ' field(s) changed.',
             [
-                'payee' => $voucher->payee,
-                'amount' => $voucher->amount,
-                'status' => $voucher->status,
-                'purpose' => $voucher->purpose,
-                'office' => $voucher->office,
+                'event' => 'voucher_updated',
+                'before' => $before,
+                'after' => $after,
+                'changes' => $changes,
+                'changed_fields' => array_keys($changes),
             ]
         );
 
         return response()->json([
             'message' => 'Voucher updated successfully.',
             'voucher' => $voucher,
+            'changed_fields' => array_keys($changes),
         ]);
     }
 
     /**
-     * Delete a voucher.
+     * Delete a voucher while preserving its details in the audit log.
      */
     public function destroy(Voucher $voucher)
     {
-        ActivityLog::record(
+        $before = $this->voucherSnapshot($voucher);
+
+        $this->logVoucherActivity(
             'DELETED',
-            'Vouchers',
-            "Deleted Disbursement Voucher {$voucher->voucher_number} (Payee: {$voucher->payee}, Amount: PHP " . number_format($voucher->amount, 2) . ")",
-            $voucher->voucher_number,
-            $voucher->id,
+            $voucher,
+            'Deleted disbursement voucher ' .
+                $voucher->voucher_number,
             [
-                'payee' => $voucher->payee,
-                'amount' => $voucher->amount,
+                'event' => 'voucher_deleted',
+                'before' => $before,
+                'deleted_record' => $before,
             ]
         );
 
@@ -164,6 +222,49 @@ class VoucherController extends Controller
 
         return response()->json([
             'message' => 'Voucher deleted successfully.',
+            'deleted_voucher' => $before,
         ]);
+    }
+
+    /**
+     * Create a consistent snapshot of the voucher.
+     */
+    private function voucherSnapshot(Voucher $voucher): array
+    {
+        return [
+            'id' => $voucher->id,
+            'voucher_number' => $voucher->voucher_number,
+            'date' => $voucher->date,
+            'payee' => $voucher->payee,
+            'address' => $voucher->address,
+            'office' => $voucher->office,
+            'purpose' => $voucher->purpose,
+            'amount' => (float) ($voucher->amount ?? 0),
+            'amount_words' => $voucher->amount_words,
+            'prepared_by' => $voucher->prepared_by,
+            'checked_by' => $voucher->checked_by,
+            'approved_by' => $voucher->approved_by,
+            'received_by' => $voucher->received_by,
+            'status' => $voucher->status,
+        ];
+    }
+
+    /**
+     * Record voucher activity using the existing ActivityLog helper.
+     */
+    private function logVoucherActivity(
+        string $action,
+        Voucher $voucher,
+        string $description,
+        array $properties
+    ): void {
+        ActivityLog::record(
+            $action,
+            'Vouchers',
+            $description,
+            $voucher->voucher_number,
+            (int) $voucher->id,
+            $properties
+        );
     }
 }

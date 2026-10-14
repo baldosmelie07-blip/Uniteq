@@ -1,645 +1,1116 @@
-import { useEffect, useState, useMemo } from "react";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import axios from "axios";
 import {
-    ShieldCheck,
+    Activity,
     Search,
     RefreshCw,
-    Filter,
-    Calendar,
     Download,
     Printer,
-    CheckCircle2,
-    AlertCircle,
-    User,
-    Clock,
-    FileText,
-    Receipt,
-    Wallet,
-    Info,
-    X,
     ChevronLeft,
     ChevronRight,
+    Eye,
+    X,
+    Clock,
+    User,
+    ShieldCheck,
+    FileText,
+    CalendarDays,
+    ChevronDown,
+    ChevronUp,
+    ArrowRight,
+    History,
+    AlertCircle,
+    CheckCircle2,
+    Filter,
+    ClipboardList,
 } from "lucide-react";
-import api from "../api/api";
 
-export default function AuditTrail() {
-    const [logs, setLogs] = useState([]);
-    const [stats, setStats] = useState({
-        total_logs: 0,
-        today_logs: 0,
-        receipt_logs: 0,
-        voucher_logs: 0,
-        auth_logs: 0,
-    });
-    const [loading, setLoading] = useState(true);
+const API_BASE_URL = "http://127.0.0.1:8000/api";
+const PAGE_SIZE = 10;
 
-    // Filters
-    const [search, setSearch] = useState("");
-    const [selectedModule, setSelectedModule] = useState("All");
-    const [selectedAction, setSelectedAction] = useState("All");
-    const [dateFrom, setDateFrom] = useState("");
-    const [dateTo, setDateTo] = useState("");
+function getHeaders() {
+    const token =
+        localStorage.getItem("uniteq_token") ||
+        sessionStorage.getItem("uniteq_token") ||
+        localStorage.getItem("token") ||
+        sessionStorage.getItem("token");
 
-    // Pagination
-    const [currentPage, setCurrentPage] = useState(1);
-    const [totalPages, setTotalPages] = useState(1);
-    const [totalItems, setTotalItems] = useState(0);
+    return {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+}
 
-    // Selected log for detail modal
-    const [activeLog, setActiveLog] = useState(null);
+function getProperties(log) {
+    let value = log?.properties;
 
-    useEffect(() => {
-        loadLogs(currentPage);
-    }, [currentPage, selectedModule, selectedAction, dateFrom, dateTo]);
-
-    async function loadLogs(page = 1) {
+    if (typeof value === "string") {
         try {
-            setLoading(true);
-
-            const params = {
-                page,
-                per_page: 25,
-            };
-
-            if (selectedModule !== "All") params.module = selectedModule;
-            if (selectedAction !== "All") params.action = selectedAction;
-            if (dateFrom) params.date_from = dateFrom;
-            if (dateTo) params.date_to = dateTo;
-            if (search.trim()) params.search = search.trim();
-
-            const response = await api.get("/activity-logs", { params });
-
-            if (response.data) {
-                setLogs(response.data.logs || []);
-                setTotalPages(response.data.last_page || 1);
-                setCurrentPage(response.data.current_page || 1);
-                setTotalItems(response.data.total || 0);
-                if (response.data.stats) {
-                    setStats(response.data.stats);
-                }
-            }
-        } catch (error) {
-            console.error("Failed to load activity logs:", error);
-        } finally {
-            setLoading(false);
+            value = JSON.parse(value);
+        } catch {
+            return {};
         }
     }
 
-    function handleSearchSubmit(e) {
-        e.preventDefault();
-        setCurrentPage(1);
-        loadLogs(1);
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : {};
+}
+
+function displayValue(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+
+    if (typeof value === "object") {
+        return JSON.stringify(value, null, 2);
     }
 
-    function clearFilters() {
-        setSearch("");
-        setSelectedModule("All");
-        setSelectedAction("All");
-        setDateFrom("");
-        setDateTo("");
-        setCurrentPage(1);
+    return String(value);
+}
+
+function fieldLabel(field) {
+    return String(field)
+        .replace(/_/g, " ")
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatDate(value) {
+    if (!value) return "—";
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime())
+        ? String(value)
+        : date.toLocaleString("en-PH", {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+          });
+}
+
+function getChanges(log) {
+    const properties = getProperties(log);
+
+    if (
+        properties.changes &&
+        typeof properties.changes === "object" &&
+        !Array.isArray(properties.changes)
+    ) {
+        return Object.entries(properties.changes).map(([field, change]) => ({
+            field,
+            before: change?.before,
+            after: change?.after,
+        }));
     }
 
-    function formatDateTime(dateString) {
-        if (!dateString) return "—";
-        const date = new Date(dateString);
-        return date.toLocaleString("en-PH", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: true,
-        });
+    if (
+        properties.before &&
+        properties.after &&
+        typeof properties.before === "object" &&
+        typeof properties.after === "object"
+    ) {
+        const ignored = ["updated_at", "created_at"];
+
+        return Object.keys(properties.after)
+            .filter((field) => {
+                if (ignored.includes(field)) return false;
+
+                return (
+                    displayValue(properties.before[field]) !==
+                    displayValue(properties.after[field])
+                );
+            })
+            .map((field) => ({
+                field,
+                before: properties.before[field],
+                after: properties.after[field],
+            }));
     }
 
-    function getActionBadge(action) {
-        switch (action) {
-            case "CREATED":
-                return "bg-emerald-100 text-emerald-800 border-emerald-200";
-            case "UPDATED":
-                return "bg-blue-100 text-blue-800 border-blue-200";
-            case "DELETED":
-                return "bg-red-100 text-red-800 border-red-200";
-            case "PAYMENT":
-                return "bg-amber-100 text-amber-800 border-amber-200";
-            case "LOGIN":
-                return "bg-purple-100 text-purple-800 border-purple-200";
-            case "LOGOUT":
-                return "bg-gray-100 text-gray-800 border-gray-200";
-            default:
-                return "bg-slate-100 text-slate-800 border-slate-200";
-        }
+    return [];
+}
+
+function actionStyle(action) {
+    const value = String(action || "").toUpperCase();
+
+    if (value.includes("DELETE") || value.includes("REJECT")) {
+        return "bg-red-50 text-red-700 ring-red-200";
     }
 
-    function getModuleIcon(module) {
-        switch (module) {
-            case "Receipts":
-            case "Collections":
-                return <Receipt className="w-4 h-4 text-emerald-600" />;
-            case "Vouchers":
-                return <Wallet className="w-4 h-4 text-blue-600" />;
-            case "Users":
-                return <User className="w-4 h-4 text-purple-600" />;
-            case "Authentication":
-                return <ShieldCheck className="w-4 h-4 text-indigo-600" />;
-            default:
-                return <FileText className="w-4 h-4 text-gray-600" />;
-        }
+    if (
+        value.includes("UPDATE") ||
+        value.includes("EDIT") ||
+        value.includes("PAYMENT")
+    ) {
+        return "bg-amber-50 text-amber-800 ring-amber-200";
     }
 
-    function exportCSV() {
-        if (logs.length === 0) {
-            alert("No activity logs to export.");
-            return;
-        }
-
-        const headers = ["Timestamp", "User", "Role", "Module", "Action", "Reference No", "Description", "IP Address"];
-        const rows = logs.map((log) => [
-            `"${formatDateTime(log.created_at)}"`,
-            `"${log.user_name || "System"}"`,
-            `"${log.user_role || "—"}"`,
-            `"${log.module}"`,
-            `"${log.action}"`,
-            `"${log.reference_no || ""}"`,
-            `"${(log.description || "").replace(/"/g, '""')}"`,
-            `"${log.ip_address || ""}"`,
-        ]);
-
-        const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
-        const encodedUri = encodeURI(csvContent);
-        const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `UniTeq_Audit_Trail_${new Date().toISOString().slice(0, 10)}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    if (value.includes("CREATE") || value.includes("ADD")) {
+        return "bg-emerald-50 text-emerald-700 ring-emerald-200";
     }
 
-    function printAuditTrail() {
-        if (logs.length === 0) {
-            alert("No logs to print.");
-            return;
-        }
+    if (
+        value.includes("APPROV") ||
+        value.includes("LOGIN") ||
+        value.includes("VERIFY")
+    ) {
+        return "bg-blue-50 text-blue-700 ring-blue-200";
+    }
 
-        const tableRows = logs
-            .map(
-                (log) => `
-                <tr>
-                    <td style="white-space: nowrap; font-size: 11px;">${formatDateTime(log.created_at)}</td>
-                    <td><strong>${log.user_name || "System"}</strong><br><span style="font-size: 10px; color: #666;">${log.user_role || ""}</span></td>
-                    <td>${log.module}</td>
-                    <td><span style="display:inline-block; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 10px; background: #eee;">${log.action}</span></td>
-                    <td>${log.reference_no || "—"}</td>
-                    <td style="font-size: 11px;">${log.description}</td>
-                    <td style="font-family: monospace; font-size: 10px;">${log.ip_address || "—"}</td>
-                </tr>
-            `
-            )
-            .join("");
+    return "bg-slate-100 text-slate-700 ring-slate-200";
+}
 
-        const printWindow = window.open("", "_blank");
-        printWindow.document.write(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>UniTeq Audit Trail Report</title>
-                <style>
-                    @page { size: landscape; margin: 12mm; }
-                    body { font-family: Arial, sans-serif; color: #111; margin: 0; padding: 10px; }
-                    .header { text-align: center; border-bottom: 2px solid #003366; padding-bottom: 10px; margin-bottom: 15px; }
-                    .header h1 { margin: 0; font-size: 18px; color: #003366; }
-                    .header h2 { margin: 3px 0; font-size: 13px; color: #555; }
-                    .header p { margin: 2px 0; font-size: 11px; color: #777; }
-                    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; }
-                    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
-                    th { background-color: #f2f5f9; font-weight: bold; color: #003366; }
-                    tr:nth-child(even) { background-color: #fafafa; }
-                </style>
-            </head>
-            <body>
-                <div class="header">
-                    <h1>UNIVERSITY OF ABRA — MAIN CAMPUS</h1>
-                    <h2>Cashier's Unit & Financial Management System (UniTeq)</h2>
-                    <p>OFFICIAL SYSTEM AUDIT TRAIL & TRANSACTION LOG</p>
-                    <p style="font-size: 10px;">Generated on: ${new Date().toLocaleString("en-PH")}</p>
+function ActionBadge({ action }) {
+    return (
+        <span
+            className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ring-1 ring-inset ${actionStyle(action)}`}
+        >
+            {action || "UNKNOWN"}
+        </span>
+    );
+}
+
+function StatCard({ label, value, icon: Icon, color, description }) {
+    const colors = {
+        blue: "bg-blue-50 text-blue-700",
+        green: "bg-emerald-50 text-emerald-700",
+        amber: "bg-amber-50 text-amber-700",
+        red: "bg-red-50 text-red-700",
+    };
+
+    return (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-500">{label}</p>
+                    <p className="mt-2 break-words text-3xl font-bold tracking-tight text-[#102d55]">
+                        {value ?? 0}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">{description}</p>
                 </div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Timestamp</th>
-                            <th>Officer</th>
-                            <th>Module</th>
-                            <th>Action</th>
-                            <th>Reference No.</th>
-                            <th>Event Description</th>
-                            <th>IP Address</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${tableRows}
-                    </tbody>
-                </table>
-            </body>
-            </html>
-        `);
-        printWindow.document.close();
-        printWindow.focus();
-        setTimeout(() => {
-            printWindow.print();
-        }, 500);
+
+                <div
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
+                        colors[color] || colors.blue
+                    }`}
+                >
+                    <Icon size={21} />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function Detail({ label, value }) {
+    return (
+        <div className="min-w-0 border-b border-slate-100 py-3 last:border-0">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {label}
+            </p>
+            <p className="break-words whitespace-pre-wrap text-sm text-slate-800">
+                {displayValue(value)}
+            </p>
+        </div>
+    );
+}
+
+function RecordSection({ title, data, defaultOpen = false }) {
+    const [open, setOpen] = useState(defaultOpen);
+
+    if (
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        Object.keys(data).length === 0
+    ) {
+        return null;
     }
 
     return (
-        <div className="space-y-6">
-            {/* Page Header */}
-            <div className="bg-gradient-to-r from-[#102d55] to-[#1c4b82] text-white rounded-2xl p-6 sm:p-8 shadow-sm">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <section className="overflow-hidden rounded-xl border border-slate-200">
+            <button
+                type="button"
+                onClick={() => setOpen((previous) => !previous)}
+                className="flex w-full items-center justify-between gap-3 bg-slate-50 px-4 py-3 text-left hover:bg-slate-100"
+            >
+                <span className="text-sm font-semibold text-slate-800">
+                    {title}
+                </span>
+                {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </button>
+
+            {open && (
+                <div className="grid grid-cols-1 gap-x-6 px-4 sm:grid-cols-2">
+                    {Object.entries(data).map(([field, value]) => (
+                        <Detail
+                            key={field}
+                            label={fieldLabel(field)}
+                            value={value}
+                        />
+                    ))}
+                </div>
+            )}
+        </section>
+    );
+}
+
+function downloadCsv(logs) {
+    if (!logs.length) {
+        window.alert("There are no audit records on this page to export.");
+        return;
+    }
+
+    const headers = [
+        "Date and Time",
+        "User",
+        "Role",
+        "Action",
+        "Module",
+        "Reference Number",
+        "Description",
+        "IP Address",
+    ];
+
+    const rows = logs.map((log) => [
+        formatDate(log.created_at),
+        log.user_name || "System",
+        log.user_role || "",
+        log.action || "",
+        log.module || "",
+        log.reference_no || "",
+        log.description || "",
+        log.ip_address || "",
+    ]);
+
+    const csvCell = (value) => {
+        let text = String(value ?? "");
+
+        // Reduce the risk of spreadsheet formula injection.
+        if (/^[=+\-@\t\r]/.test(text)) {
+            text = "'" + text;
+        }
+
+        return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const csv = [headers, ...rows]
+        .map((row) => row.map(csvCell).join(","))
+        .join("\r\n");
+
+    const blob = new Blob(["\uFEFF" + csv], {
+        type: "text/csv;charset=utf-8;",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `uniteq-audit-trail-${new Date()
+        .toISOString()
+        .slice(0, 10)}.csv`;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (character) => {
+        const entities = {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+        };
+
+        return entities[character];
+    });
+}
+
+function printLogs(logs) {
+    if (!logs.length) {
+        window.alert("There are no audit records to print.");
+        return;
+    }
+
+    const rows = logs
+        .map(
+            (log) => `
+                <tr>
+                    <td>${escapeHtml(formatDate(log.created_at))}</td>
+                    <td>${escapeHtml(log.user_name || "System")}</td>
+                    <td>${escapeHtml(log.user_role || "—")}</td>
+                    <td>${escapeHtml(log.action || "—")}</td>
+                    <td>${escapeHtml(log.module || "—")}</td>
+                    <td>${escapeHtml(log.reference_no || "—")}</td>
+                    <td>${escapeHtml(log.description || "—")}</td>
+                </tr>`
+        )
+        .join("");
+
+    const printWindow = window.open("", "_blank", "width=1200,height=800");
+
+    if (!printWindow) {
+        window.alert("Please allow pop-ups to print the audit trail.");
+        return;
+    }
+
+    printWindow.document.write(`
+        <!doctype html>
+        <html>
+        <head>
+            <title>UniTeq Audit Trail</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 24px; color: #1e293b; }
+                h1 { margin-bottom: 5px; }
+                p { color: #64748b; }
+                table { width: 100%; border-collapse: collapse; font-size: 10px; }
+                th, td { border: 1px solid #cbd5e1; padding: 7px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+                th { background: #f1f5f9; }
+                tr { page-break-inside: avoid; }
+                @media print { body { padding: 0; } }
+            </style>
+        </head>
+        <body>
+            <h1>UniTeq — Audit Trail</h1>
+            <p>Generated: ${escapeHtml(new Date().toLocaleString("en-PH"))}</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date and Time</th><th>User</th><th>Role</th>
+                        <th>Action</th><th>Module</th><th>Reference</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </body>
+        </html>
+    `);
+
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+}
+
+function getRecords(data) {
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.logs?.data)) return data.logs.data;
+    if (Array.isArray(data?.logs)) return data.logs;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.activity_logs?.data)) return data.activity_logs.data;
+    if (Array.isArray(data?.activity_logs)) return data.activity_logs;
+
+    return [];
+}
+
+function errorMessage(error) {
+    if (!error.response) {
+        return "Cannot connect to the Laravel server. Check that the backend is running.";
+    }
+
+    if (error.response.status === 401) {
+        return "Your session may have expired. Please sign in again.";
+    }
+
+    if (error.response.status === 403) {
+        return "Your account does not have permission to view the audit trail.";
+    }
+
+    return (
+        error.response.data?.message ||
+        "Unable to load audit records. Please try again."
+    );
+}
+
+export default function AuditTrail() {
+    const [logs, setLogs] = useState([]);
+    const [stats, setStats] = useState({});
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+
+    const [searchInput, setSearchInput] = useState("");
+    const [filters, setFilters] = useState({
+        search: "",
+        module: "",
+        action: "",
+        date_from: "",
+        date_to: "",
+    });
+
+    const [page, setPage] = useState(1);
+    const [lastPage, setLastPage] = useState(1);
+    const [total, setTotal] = useState(0);
+    const [activeLog, setActiveLog] = useState(null);
+
+    const loadLogs = useCallback(async (requestedPage = 1, selectedFilters = filters) => {
+        setLoading(true);
+        setError("");
+
+        try {
+            const response = await axios.get(`${API_BASE_URL}/activity-logs`, {
+                headers: getHeaders(),
+                params: {
+                    page: requestedPage,
+                    per_page: PAGE_SIZE,
+                    ...Object.fromEntries(
+                        Object.entries(selectedFilters).filter(
+                            ([, value]) => value !== ""
+                        )
+                    ),
+                },
+            });
+
+            const data = response.data || {};
+            const records = getRecords(data);
+
+            setLogs(records);
+            setTotal(
+                data.total ??
+                    data.logs?.total ??
+                    data.activity_logs?.total ??
+                    data.pagination?.total ??
+                    records.length
+            );
+            setLastPage(
+                Math.max(
+                    1,
+                    Number(
+                        data.last_page ??
+                            data.logs?.last_page ??
+                            data.activity_logs?.last_page ??
+                            data.pagination?.last_page ??
+                            1
+                    )
+                )
+            );
+            setPage(
+                Number(
+                    data.current_page ??
+                        data.logs?.current_page ??
+                        data.activity_logs?.current_page ??
+                        data.pagination?.current_page ??
+                        requestedPage
+                )
+            );
+            setStats(data.stats || {});
+        } catch (requestError) {
+            console.error("Failed to load audit trail:", requestError);
+            setLogs([]);
+            setTotal(0);
+            setLastPage(1);
+            setError(errorMessage(requestError));
+        } finally {
+            setLoading(false);
+        }
+    }, [filters]);
+
+    useEffect(() => {
+        loadLogs(1, filters);
+        // Initial request; loadLogs intentionally reads the current filter state.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const applyFilters = (event) => {
+        event.preventDefault();
+
+        const nextFilters = {
+            ...filters,
+            search: searchInput.trim(),
+        };
+
+        setFilters(nextFilters);
+        setPage(1);
+        loadLogs(1, nextFilters);
+    };
+
+    const clearFilters = () => {
+        const emptyFilters = {
+            search: "",
+            module: "",
+            action: "",
+            date_from: "",
+            date_to: "",
+        };
+
+        setSearchInput("");
+        setFilters(emptyFilters);
+        setPage(1);
+        loadLogs(1, emptyFilters);
+    };
+
+    const goToPage = (nextPage) => {
+        if (loading || nextPage < 1 || nextPage > lastPage) return;
+        loadLogs(nextPage, filters);
+    };
+
+    const changeFilter = (name, value) => {
+        setFilters((previous) => ({ ...previous, [name]: value }));
+    };
+
+    const visibleRange = useMemo(() => {
+        if (total === 0) return { start: 0, end: 0 };
+
+        return {
+            start: (page - 1) * PAGE_SIZE + 1,
+            end: Math.min(page * PAGE_SIZE, total),
+        };
+    }, [page, total]);
+
+    const summary = [
+        {
+            label: "Total Records",
+            value: stats.total ?? total,
+            description: "Records matching current results",
+            icon: Activity,
+            color: "blue",
+        },
+        {
+            label: "Created",
+            value: stats.created ?? stats.creates ?? "—",
+            description: "Creation activity",
+            icon: FileText,
+            color: "green",
+        },
+        {
+            label: "Updated",
+            value: stats.updated ?? stats.updates ?? "—",
+            description: "Modification activity",
+            icon: RefreshCw,
+            color: "amber",
+        },
+        {
+            label: "Deleted",
+            value: stats.deleted ?? stats.deletes ?? "—",
+            description: "Deletion activity",
+            icon: AlertCircle,
+            color: "red",
+        },
+    ];
+
+    const properties = activeLog ? getProperties(activeLog) : {};
+    const changes = activeLog ? getChanges(activeLog) : [];
+    const beforeRecord = properties.before ?? properties.deleted_record ?? null;
+    const afterRecord = properties.after ?? null;
+    const changedFields = Array.isArray(properties.changed_fields)
+        ? properties.changed_fields
+        : [];
+
+    return (
+        <div className="min-h-screen bg-slate-50">
+            <div className="border-b border-slate-200 bg-white">
+                <div className="mx-auto flex max-w-[1600px] flex-col justify-between gap-5 px-4 py-6 sm:px-6 lg:flex-row lg:items-center lg:px-8">
                     <div>
-                        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-blue-200 text-xs font-semibold mb-2">
-                            <ShieldCheck size={14} />
-                            Government Accountability & ISO/IEC 25010 Security
+                        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-teal-700">
+                            <ShieldCheck size={18} />
+                            UniTeq · Financial Accountability
                         </div>
-                        <h1 className="text-2xl sm:text-3xl font-bold">Transaction Tracking & Audit Trail</h1>
-                        <p className="text-blue-100 text-sm mt-1">
-                            Immutable, chronological activity log recording every cashier action, receipt issuance, and disbursement verification.
+                        <h1 className="text-2xl font-bold tracking-tight text-[#102d55] sm:text-3xl">
+                            Audit Trail
+                        </h1>
+                        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                            Track recorded activities, identify responsible users,
+                            and inspect available changes to financial records.
                         </p>
                     </div>
 
                     <div className="flex flex-wrap gap-2">
                         <button
-                            onClick={() => loadLogs(currentPage)}
+                            type="button"
+                            onClick={() => loadLogs(page, filters)}
                             disabled={loading}
-                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm transition"
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                         >
                             <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
                             Refresh
                         </button>
                         <button
-                            onClick={exportCSV}
-                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm transition"
+                            type="button"
+                            onClick={() => downloadCsv(logs)}
+                            disabled={!logs.length}
+                            className="inline-flex items-center gap-2 rounded-xl bg-[#102d55] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#173f73] disabled:opacity-50"
                         >
                             <Download size={16} />
                             Export CSV
                         </button>
                         <button
-                            onClick={printAuditTrail}
-                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-[#102d55] hover:bg-blue-50 font-semibold text-sm transition shadow-sm"
+                            type="button"
+                            onClick={() => printLogs(logs)}
+                            disabled={!logs.length}
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                         >
                             <Printer size={16} />
-                            Print Log
+                            Print
                         </button>
                     </div>
                 </div>
             </div>
 
-            {/* Quick Stats Grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
+            <main className="mx-auto max-w-[1600px] space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+                <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    {summary.map((item) => (
+                        <StatCard key={item.label} {...item} />
+                    ))}
+                </section>
+
+                <form
+                    onSubmit={applyFilters}
+                    className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                >
+                    <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
                         <div>
-                            <p className="text-xs text-gray-500 font-medium">Total Events Recorded</p>
-                            <p className="text-2xl font-bold text-gray-900 mt-1">{stats.total_logs.toLocaleString()}</p>
+                            <div className="flex items-center gap-2">
+                                <Filter size={19} className="text-teal-700" />
+                                <h2 className="font-bold text-slate-900">
+                                    Find Activity Records
+                                </h2>
+                            </div>
+                            <p className="mt-1 text-sm text-slate-500">
+                                Narrow the records by keyword, module, action, or date.
+                            </p>
                         </div>
-                        <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                            <Clock size={20} />
-                        </div>
+                        <span className="text-xs text-slate-500">
+                            {total} matching record(s)
+                        </span>
                     </div>
-                </div>
 
-                <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                        <div className="xl:col-span-2">
+                            <label htmlFor="audit-search" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                                Search
+                            </label>
+                            <div className="relative">
+                                <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <input
+                                    id="audit-search"
+                                    value={searchInput}
+                                    onChange={(event) => setSearchInput(event.target.value)}
+                                    placeholder="User, reference, description..."
+                                    className="w-full rounded-xl border border-slate-300 py-3 pl-10 pr-3 text-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
+                                />
+                            </div>
+                        </div>
+
                         <div>
-                            <p className="text-xs text-gray-500 font-medium">Today's Transactions</p>
-                            <p className="text-2xl font-bold text-emerald-600 mt-1">{stats.today_logs.toLocaleString()}</p>
+                            <label htmlFor="audit-module" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                                Module
+                            </label>
+                            <select
+                                id="audit-module"
+                                value={filters.module}
+                                onChange={(event) => changeFilter("module", event.target.value)}
+                                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-teal-600"
+                            >
+                                <option value="">All Modules</option>
+                                <option value="Receipt">Receipt</option>
+                                <option value="Receipts">Receipts</option>
+                                <option value="Collection">Collection</option>
+                                <option value="Collections">Collections</option>
+                                <option value="Voucher">Voucher</option>
+                                <option value="Vouchers">Vouchers</option>
+                                <option value="Reconciliation">Reconciliation</option>
+                                <option value="Users">Users</option>
+                                <option value="Authentication">Authentication</option>
+                            </select>
                         </div>
-                        <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                            <CheckCircle2 size={20} />
-                        </div>
-                    </div>
-                </div>
 
-                <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
                         <div>
-                            <p className="text-xs text-gray-500 font-medium">Receipt & Collections</p>
-                            <p className="text-2xl font-bold text-[#102d55] mt-1">{stats.receipt_logs.toLocaleString()}</p>
+                            <label htmlFor="audit-action" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                                Action
+                            </label>
+                            <select
+                                id="audit-action"
+                                value={filters.action}
+                                onChange={(event) => changeFilter("action", event.target.value)}
+                                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-teal-600"
+                            >
+                                <option value="">All Actions</option>
+                                <option value="CREATED">Created</option>
+                                <option value="UPDATED">Updated</option>
+                                <option value="PAYMENT">Payment</option>
+                                <option value="DELETED">Deleted</option>
+                                <option value="APPROVED">Approved</option>
+                                <option value="REJECTED">Rejected</option>
+                            </select>
                         </div>
-                        <div className="w-10 h-10 rounded-xl bg-sky-50 text-[#102d55] flex items-center justify-center">
-                            <Receipt size={20} />
-                        </div>
-                    </div>
-                </div>
 
-                <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
                         <div>
-                            <p className="text-xs text-gray-500 font-medium">Disbursement Vouchers</p>
-                            <p className="text-2xl font-bold text-amber-600 mt-1">{stats.voucher_logs.toLocaleString()}</p>
+                            <label htmlFor="audit-date-from" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                                From Date
+                            </label>
+                            <input
+                                id="audit-date-from"
+                                type="date"
+                                value={filters.date_from}
+                                max={filters.date_to || undefined}
+                                onChange={(event) => changeFilter("date_from", event.target.value)}
+                                className="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm outline-none focus:border-teal-600"
+                            />
                         </div>
-                        <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                            <Wallet size={20} />
+
+                        <div>
+                            <label htmlFor="audit-date-to" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                                To Date
+                            </label>
+                            <input
+                                id="audit-date-to"
+                                type="date"
+                                value={filters.date_to}
+                                min={filters.date_from || undefined}
+                                onChange={(event) => changeFilter("date_to", event.target.value)}
+                                className="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm outline-none focus:border-teal-600"
+                            />
                         </div>
                     </div>
-                </div>
-            </div>
 
-            {/* Filter and Search Bar */}
-            <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm space-y-4">
-                <form onSubmit={handleSearchSubmit} className="flex flex-col lg:flex-row gap-3">
-                    <div className="relative flex-1">
-                        <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                        <input
-                            type="text"
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Search by description, OR #, Voucher #, cashier name, or IP..."
-                            className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                        />
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                        {/* Module Selector */}
-                        <select
-                            value={selectedModule}
-                            onChange={(e) => {
-                                setSelectedModule(e.target.value);
-                                setCurrentPage(1);
-                            }}
-                            className="px-3 py-2.5 rounded-xl border border-gray-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        >
-                            <option value="All">All Modules</option>
-                            <option value="Receipts">Receipts</option>
-                            <option value="Vouchers">Vouchers</option>
-                            <option value="Users">Users</option>
-                            <option value="Authentication">Authentication</option>
-                        </select>
-
-                        {/* Action Selector */}
-                        <select
-                            value={selectedAction}
-                            onChange={(e) => {
-                                setSelectedAction(e.target.value);
-                                setCurrentPage(1);
-                            }}
-                            className="px-3 py-2.5 rounded-xl border border-gray-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-                        >
-                            <option value="All">All Actions</option>
-                            <option value="CREATED">Created</option>
-                            <option value="UPDATED">Updated</option>
-                            <option value="PAYMENT">Payment</option>
-                            <option value="DELETED">Deleted</option>
-                            <option value="LOGIN">Login</option>
-                            <option value="LOGOUT">Logout</option>
-                        </select>
-
-                        {/* Date From */}
-                        <input
-                            type="date"
-                            value={dateFrom}
-                            onChange={(e) => {
-                                setDateFrom(e.target.value);
-                                setCurrentPage(1);
-                            }}
-                            className="px-3 py-2.5 rounded-xl border border-gray-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-                            title="From Date"
-                        />
-
-                        {/* Date To */}
-                        <input
-                            type="date"
-                            value={dateTo}
-                            onChange={(e) => {
-                                setDateTo(e.target.value);
-                                setCurrentPage(1);
-                            }}
-                            className="px-3 py-2.5 rounded-xl border border-gray-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
-                            title="To Date"
-                        />
-
+                    <div className="mt-4 flex flex-wrap gap-2">
                         <button
                             type="submit"
-                            className="px-4 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-medium text-sm transition"
+                            disabled={loading || Boolean(filters.date_from && filters.date_to && filters.date_from > filters.date_to)}
+                            className="rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
                         >
-                            Filter
+                            Apply Filters
                         </button>
-
-                        {(search || selectedModule !== "All" || selectedAction !== "All" || dateFrom || dateTo) && (
-                            <button
-                                type="button"
-                                onClick={clearFilters}
-                                className="px-3 py-2.5 rounded-xl border border-gray-300 hover:bg-gray-100 text-gray-600 text-sm transition"
-                            >
-                                Reset
-                            </button>
-                        )}
+                        <button
+                            type="button"
+                            onClick={clearFilters}
+                            className="rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                            Clear Filters
+                        </button>
                     </div>
                 </form>
-            </div>
 
-            {/* Audit Log Table */}
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                        <thead className="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                            <tr>
-                                <th className="px-6 py-4">Timestamp</th>
-                                <th className="px-6 py-4">Officer / User</th>
-                                <th className="px-6 py-4">Module</th>
-                                <th className="px-6 py-4">Action</th>
-                                <th className="px-6 py-4">Reference</th>
-                                <th className="px-6 py-4">Event Description</th>
-                                <th className="px-6 py-4">IP Address</th>
-                                <th className="px-6 py-4 text-right">Details</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                            {loading ? (
-                                <tr>
-                                    <td colSpan="8" className="px-6 py-12 text-center text-gray-400">
-                                        <div className="w-8 h-8 border-4 border-blue-200 border-t-blue-700 rounded-full animate-spin mx-auto mb-3"></div>
-                                        Loading audit trail records...
-                                    </td>
-                                </tr>
-                            ) : logs.length === 0 ? (
-                                <tr>
-                                    <td colSpan="8" className="px-6 py-12 text-center text-gray-500">
-                                        <Info size={28} className="mx-auto text-gray-300 mb-2" />
-                                        No activity logs found matching the filter criteria.
-                                    </td>
-                                </tr>
-                            ) : (
-                                logs.map((log) => (
-                                    <tr key={log.id} className="hover:bg-blue-50/40 transition">
-                                        <td className="px-6 py-3.5 whitespace-nowrap text-xs text-gray-600 font-mono">
-                                            {formatDateTime(log.created_at)}
-                                        </td>
-                                        <td className="px-6 py-3.5 whitespace-nowrap">
-                                            <div className="font-medium text-gray-900">{log.user_name || "System"}</div>
-                                            <div className="text-xs text-gray-500">{log.user_role || "Authorized User"}</div>
-                                        </td>
-                                        <td className="px-6 py-3.5 whitespace-nowrap">
-                                            <div className="flex items-center gap-1.5 font-medium text-gray-700">
-                                                {getModuleIcon(log.module)}
-                                                <span>{log.module}</span>
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-3.5 whitespace-nowrap">
-                                            <span
-                                                className={`inline-flex px-2.5 py-1 rounded-md text-xs font-semibold border ${getActionBadge(
-                                                    log.action
-                                                )}`}
-                                            >
-                                                {log.action}
-                                            </span>
-                                        </td>
-                                        <td className="px-6 py-3.5 whitespace-nowrap">
-                                            {log.reference_no ? (
-                                                <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-100 text-gray-800">
-                                                    {log.reference_no}
-                                                </span>
-                                            ) : (
-                                                <span className="text-gray-400">—</span>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-3.5 text-gray-800 max-w-md truncate" title={log.description}>
-                                            {log.description}
-                                        </td>
-                                        <td className="px-6 py-3.5 whitespace-nowrap text-xs text-gray-500 font-mono">
-                                            {log.ip_address || "127.0.0.1"}
-                                        </td>
-                                        <td className="px-6 py-3.5 whitespace-nowrap text-right">
-                                            <button
-                                                onClick={() => setActiveLog(log)}
-                                                className="text-blue-600 hover:text-blue-900 font-medium text-xs hover:underline"
-                                            >
-                                                Inspect
-                                            </button>
-                                        </td>
+                {error && (
+                    <div role="alert" className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                        <AlertCircle size={19} className="mt-0.5 shrink-0" />
+                        <div className="flex-1">
+                            <p className="font-bold">Unable to load audit trail</p>
+                            <p className="mt-1">{error}</p>
+                            <button
+                                type="button"
+                                onClick={() => loadLogs(page, filters)}
+                                className="mt-2 font-semibold underline"
+                            >
+                                Try again
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                    <div className="flex flex-col justify-between gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center">
+                        <div>
+                            <h2 className="flex items-center gap-2 font-bold text-slate-900">
+                                <ClipboardList size={19} className="text-teal-700" />
+                                Activity Records
+                            </h2>
+                            <p className="mt-1 text-sm text-slate-500">
+                                {visibleRange.start}–{visibleRange.end} of {total} record(s)
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                            <Clock size={15} />
+                            Timestamps are supplied by the backend.
+                        </div>
+                    </div>
+
+                    {loading ? (
+                        <div className="py-16 text-center text-slate-500">
+                            <RefreshCw size={28} className="mx-auto mb-3 animate-spin" />
+                            Loading audit records...
+                        </div>
+                    ) : logs.length === 0 ? (
+                        <div className="px-5 py-16 text-center">
+                            <History size={34} className="mx-auto mb-3 text-slate-300" />
+                            <h3 className="font-semibold text-slate-800">No audit records found</h3>
+                            <p className="mx-auto mt-1 max-w-md text-sm text-slate-500">
+                                Try adjusting your search filters, or refresh after a transaction has been recorded.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full min-w-[1100px] text-left text-sm">
+                                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                                    <tr>
+                                        <th className="px-5 py-4 font-semibold">Date & Time</th>
+                                        <th className="px-5 py-4 font-semibold">User</th>
+                                        <th className="px-5 py-4 font-semibold">Module</th>
+                                        <th className="px-5 py-4 font-semibold">Action</th>
+                                        <th className="px-5 py-4 font-semibold">Reference</th>
+                                        <th className="px-5 py-4 font-semibold">Description</th>
+                                        <th className="px-5 py-4 text-right font-semibold">Details</th>
                                     </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
-                </div>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {logs.map((log, index) => (
+                                        <tr key={log.id ?? `${log.created_at}-${index}`} className="transition hover:bg-teal-50/40">
+                                            <td className="whitespace-nowrap px-5 py-4 text-slate-600">
+                                                {formatDate(log.created_at)}
+                                            </td>
+                                            <td className="px-5 py-4">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-50 font-bold text-blue-700">
+                                                        {(log.user_name || "S").trim().charAt(0).toUpperCase()}
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-semibold text-slate-800">{log.user_name || "System"}</p>
+                                                        <p className="mt-0.5 text-xs text-slate-500">{log.user_role || "—"}</p>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-5 py-4">
+                                                <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                                                    {log.module || "—"}
+                                                </span>
+                                            </td>
+                                            <td className="px-5 py-4">
+                                                <ActionBadge action={log.action} />
+                                            </td>
+                                            <td className="px-5 py-4 font-mono text-xs text-slate-600">
+                                                {log.reference_no || "—"}
+                                            </td>
+                                            <td className="max-w-sm px-5 py-4 text-slate-600">
+                                                <p className="line-clamp-2">
+                                                    {log.description || "No description provided."}
+                                                </p>
+                                            </td>
+                                            <td className="px-5 py-4 text-right">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveLog(log)}
+                                                    className="inline-flex items-center gap-2 rounded-xl border border-teal-200 bg-white px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-50"
+                                                >
+                                                    <Eye size={15} />
+                                                    Inspect
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
 
-                {/* Pagination Bar */}
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-6 py-4 border-t border-gray-100 gap-3 text-sm text-gray-600">
+                    {!loading && logs.length > 0 && (
+                        <div className="flex flex-col justify-between gap-3 border-t border-slate-200 px-5 py-4 sm:flex-row sm:items-center">
+                            <p className="text-sm text-slate-500">
+                                Page <strong className="text-slate-800">{page}</strong> of{" "}
+                                <strong className="text-slate-800">{lastPage}</strong>
+                            </p>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => goToPage(page - 1)}
+                                    disabled={page <= 1 || loading}
+                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    <ChevronLeft size={16} />
+                                    Previous
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => goToPage(page + 1)}
+                                    disabled={page >= lastPage || loading}
+                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    Next
+                                    <ChevronRight size={16} />
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </section>
+
+                <div className="flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+                    <ShieldCheck size={20} className="mt-0.5 shrink-0" />
                     <div>
-                        Showing <span className="font-semibold">{logs.length}</span> of{" "}
-                        <span className="font-semibold">{totalItems}</span> recorded events
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-                            disabled={currentPage === 1 || loading}
-                            className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition"
-                            title="Previous Page"
-                        >
-                            <ChevronLeft size={18} />
-                        </button>
-                        <span className="text-xs font-medium px-2">
-                            Page {currentPage} of {totalPages}
-                        </span>
-                        <button
-                            onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-                            disabled={currentPage === totalPages || loading}
-                            className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition"
-                            title="Next Page"
-                        >
-                            <ChevronRight size={18} />
-                        </button>
+                        <p className="font-bold">Audit trail reminder</p>
+                        <p className="mt-1 leading-6">
+                            This screen displays the activity information returned by Laravel.
+                            It does not itself make logs immutable or guarantee that every action
+                            is logged. Protect the API with server-side authorization and record
+                            transaction changes in the backend.
+                        </p>
                     </div>
                 </div>
-            </div>
+            </main>
 
-            {/* Audit Inspector Modal */}
             {activeLog && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                    <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-gray-100 overflow-hidden">
-                        <div className="flex items-center justify-between p-6 border-b border-gray-100 bg-gray-50">
-                            <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold">
-                                    <ShieldCheck size={22} />
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 sm:p-6"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) setActiveLog(null);
+                    }}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="audit-modal-title"
+                        className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+                    >
+                        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+                            <div>
+                                <div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-teal-700">
+                                    <ShieldCheck size={16} />
+                                    Audit Record Inspector
                                 </div>
-                                <div>
-                                    <h3 className="font-bold text-gray-900 text-lg">Audit Record Details</h3>
-                                    <p className="text-xs text-gray-500">Record ID #{activeLog.id} • UniTeq Security Log</p>
-                                </div>
+                                <h2 id="audit-modal-title" className="text-xl font-bold text-[#102d55]">
+                                    Transaction History
+                                </h2>
+                                <p className="mt-1 text-sm text-slate-500">
+                                    Record ID: {activeLog.id ?? "—"}
+                                </p>
                             </div>
                             <button
+                                type="button"
                                 onClick={() => setActiveLog(null)}
-                                className="p-2 rounded-xl text-gray-400 hover:bg-gray-200 transition"
+                                aria-label="Close audit details"
+                                className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
                             >
-                                <X size={20} />
+                                <X size={22} />
                             </button>
                         </div>
 
-                        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-                            <div className="grid grid-cols-2 gap-4">
-                                <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
-                                    <span className="text-xs text-gray-500 block">Timestamp</span>
-                                    <span className="font-semibold text-gray-900 text-sm">
-                                        {formatDateTime(activeLog.created_at)}
-                                    </span>
-                                </div>
-                                <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
-                                    <span className="text-xs text-gray-500 block">Authorized Officer</span>
-                                    <span className="font-semibold text-gray-900 text-sm">
-                                        {activeLog.user_name || "System"} ({activeLog.user_role || "User"})
-                                    </span>
-                                </div>
-                                <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
-                                    <span className="text-xs text-gray-500 block">Module / Action</span>
-                                    <span className="font-semibold text-gray-900 text-sm">
-                                        {activeLog.module} • {activeLog.action}
-                                    </span>
-                                </div>
-                                <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
-                                    <span className="text-xs text-gray-500 block">Reference Identifier</span>
-                                    <span className="font-semibold text-gray-900 text-sm font-mono">
-                                        {activeLog.reference_no || "N/A"}
-                                    </span>
-                                </div>
+                        <div className="space-y-6 overflow-y-auto p-5 sm:p-6">
+                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                                <section className="rounded-xl border border-slate-200 p-4">
+                                    <h3 className="mb-2 flex items-center gap-2 font-bold text-slate-900">
+                                        <Clock size={17} className="text-teal-700" />
+                                        Activity Information
+                                    </h3>
+                                    <Detail label="Date and Time" value={formatDate(activeLog.created_at)} />
+                                    <Detail label="Action" value={activeLog.action} />
+                                    <Detail label="Module" value={activeLog.module} />
+                                    <Detail label="Reference Number" value={activeLog.reference_no} />
+                                    <Detail label="Reference ID" value={activeLog.reference_id} />
+                                    <Detail label="Description" value={activeLog.description} />
+                                </section>
+
+                                <section className="rounded-xl border border-slate-200 p-4">
+                                    <h3 className="mb-2 flex items-center gap-2 font-bold text-slate-900">
+                                        <User size={17} className="text-teal-700" />
+                                        User Information
+                                    </h3>
+                                    <Detail label="Name" value={activeLog.user_name} />
+                                    <Detail label="Role" value={activeLog.user_role} />
+                                    <Detail label="User ID" value={activeLog.user_id} />
+                                    <Detail label="IP Address" value={activeLog.ip_address} />
+                                    <Detail label="Device / Browser" value={activeLog.user_agent} />
+                                </section>
+
+                                <section className="rounded-xl border border-slate-200 p-4">
+                                    <h3 className="mb-2 flex items-center gap-2 font-bold text-slate-900">
+                                        <History size={17} className="text-teal-700" />
+                                        Change Summary
+                                    </h3>
+                                    <Detail label="Event" value={properties.event} />
+                                    <Detail
+                                        label="Changed Fields"
+                                        value={
+                                            changedFields.length
+                                                ? changedFields.map(fieldLabel).join(", ")
+                                                : changes.length
+                                                  ? changes.map((change) => fieldLabel(change.field)).join(", ")
+                                                  : "No field-level changes recorded"
+                                        }
+                                    />
+                                    <Detail
+                                        label="Transaction"
+                                        value={activeLog.reference_no || activeLog.reference_id || "Not specified"}
+                                    />
+                                </section>
                             </div>
 
-                            <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-100">
-                                <span className="text-xs font-semibold text-blue-900 block mb-1">Event Description</span>
-                                <p className="text-sm text-gray-800">{activeLog.description}</p>
-                            </div>
+                            <section>
+                                <div className="mb-3">
+                                    <h3 className="text-lg font-bold text-slate-900">Changes Made</h3>
+                                    <p className="mt-1 text-sm text-slate-500">
+                                        Previous values are compared with the new values saved in the audit record.
+                                    </p>
+                                </div>
 
-                            <div className="grid grid-cols-2 gap-4">
-                                <div className="p-3 rounded-xl bg-gray-50 border border-gray-100">
-                                    <span className="text-xs text-gray-500 block">Client IP Address</span>
-                                    <span className="font-mono text-xs text-gray-800">{activeLog.ip_address || "127.0.0.1"}</span>
-                                </div>
-                                <div className="p-3 rounded-xl bg-gray-50 border border-gray-100 truncate">
-                                    <span className="text-xs text-gray-500 block">User Agent</span>
-                                    <span className="font-mono text-xs text-gray-800 truncate block" title={activeLog.user_agent}>
-                                        {activeLog.user_agent || "UniTeq Web App"}
-                                    </span>
-                                </div>
-                            </div>
+                                {changes.length > 0 ? (
+                                    <div className="overflow-hidden rounded-xl border border-slate-200">
+                                        <div className="hidden grid-cols-[1fr_1fr_36px_1fr] gap-3 bg-slate-50 px-4 py-3 text-xs font-bold uppercase text-slate-500 sm:grid">
+                                            <span>Field</span>
+                                            <span>Previous Value</span>
+                                            <span />
+                                            <span>New Value</span>
+                                        </div>
+                                        <div className="divide-y divide-slate-100">
+                                            {changes.map((change) => (
+                                                <div key={change.field} className="grid grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-[1fr_1fr_36px_1fr] sm:items-center">
+                                                    <p className="font-semibold text-slate-800">
+                                                        {fieldLabel(change.field)}
+                                                    </p>
+                                                    <div className="rounded-lg bg-red-50 p-3">
+                                                        <p className="mb-1 text-xs font-semibold text-red-700 sm:hidden">Previous</p>
+                                                        <p className="break-words whitespace-pre-wrap text-sm text-red-900">
+                                                            {displayValue(change.before)}
+                                                        </p>
+                                                    </div>
+                                                    <div className="hidden justify-center text-slate-400 sm:flex">
+                                                        <ArrowRight size={18} />
+                                                    </div>
+                                                    <div className="rounded-lg bg-emerald-50 p-3">
+                                                        <p className="mb-1 text-xs font-semibold text-emerald-700 sm:hidden">New Value</p>
+                                                        <p className="break-words whitespace-pre-wrap text-sm text-emerald-900">
+                                                            {displayValue(change.after)}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                        <p className="text-sm font-semibold text-slate-700">
+                                            {changedFields.length
+                                                ? "The field names were saved, but before-and-after values are not available."
+                                                : "No field-level comparison is available for this record."}
+                                        </p>
+                                        <p className="mt-1 text-sm text-slate-500">
+                                            Older records may not include snapshots. New comparisons will appear only when the backend saves before-and-after values.
+                                        </p>
+                                    </div>
+                                )}
+                            </section>
 
-                            {activeLog.properties && Object.keys(activeLog.properties).length > 0 && (
-                                <div>
-                                    <span className="text-xs font-semibold text-gray-700 block mb-1.5">
-                                        Transaction Payload / Diff
-                                    </span>
-                                    <pre className="p-3 bg-gray-900 text-green-400 rounded-xl text-xs font-mono overflow-x-auto max-h-48">
-                                        {JSON.stringify(activeLog.properties, null, 2)}
-                                    </pre>
-                                </div>
-                            )}
+                            <div className="space-y-3">
+                                <RecordSection
+                                    title={properties.deleted_record ? "Deleted Record Details" : "Original Record Details"}
+                                    data={beforeRecord}
+                                />
+                                <RecordSection
+                                    title="Updated Record Details"
+                                    data={afterRecord}
+                                />
+                                <RecordSection
+                                    title="Advanced Audit Data (JSON)"
+                                    data={properties}
+                                />
+                            </div>
                         </div>
 
-                        <div className="p-4 bg-gray-50 border-t border-gray-100 text-right">
+                        <div className="flex flex-col justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center">
+                            <p className="text-xs text-slate-500">
+                                <CalendarDays size={14} className="mr-1 inline" />
+                                Recorded: {formatDate(activeLog.created_at)}
+                            </p>
                             <button
+                                type="button"
                                 onClick={() => setActiveLog(null)}
-                                className="px-5 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-900 text-white font-medium text-sm transition"
+                                className="rounded-xl bg-[#102d55] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#173f73]"
                             >
-                                Close
+                                Close Details
                             </button>
                         </div>
                     </div>

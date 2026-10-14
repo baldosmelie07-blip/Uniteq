@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Support\Facades\Route;
@@ -7,57 +8,76 @@ use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ReceiptController;
 use App\Http\Controllers\Api\VoucherController;
 use App\Http\Controllers\Api\ActivityLogController;
+use App\Http\Controllers\Api\AccountingReviewController;
 
-// Authentication
+/*
+|--------------------------------------------------------------------------
+| Public API Routes
+|--------------------------------------------------------------------------
+*/
 
 Route::post('/login', [AuthController::class, 'login']);
 
-
-// Protected API
+/*
+|--------------------------------------------------------------------------
+| Protected API Routes
+|--------------------------------------------------------------------------
+*/
 
 Route::middleware('auth:sanctum')->group(function () {
 
     // Authentication
-
     Route::get('/me', [AuthController::class, 'me']);
-
     Route::post('/logout', [AuthController::class, 'logout']);
 
-
-    // Users
-
+    // User Management
     Route::apiResource('users', UserController::class);
 
-
-    // Receipts
-
+    // Official Receipts and Collections
     Route::apiResource('receipts', ReceiptController::class);
-
-
-    // Pending balances
 
     Route::get(
         '/pending-balances',
         [ReceiptController::class, 'pendingBalances']
     );
 
-
-    // Record payment
-
     Route::post(
         '/receipts/{receipt}/payment',
         [ReceiptController::class, 'recordPayment']
     );
 
-
-   // Vouchers
-
+    // Disbursement Vouchers
     Route::apiResource('vouchers', VoucherController::class);
 
+    // Accounting Reviews
+    Route::get(
+        '/accounting-reviews',
+        [AccountingReviewController::class, 'index']
+    );
 
-    // Audit Trail / Activity Logs
+    Route::post(
+        '/accounting-reviews',
+        [AccountingReviewController::class, 'store']
+    );
 
-    Route::get('/activity-logs', [ActivityLogController::class, 'index']);
-    Route::get('/activity-logs/summary', [ActivityLogController::class, 'summary']);
+    Route::get(
+        '/accounting-reviews/{accountingReview}/history',
+        [AccountingReviewController::class, 'history']
+    );
 
+    Route::get(
+        '/accounting-reviews/{accountingReview}',
+        [AccountingReviewController::class, 'show']
+    );
+
+    // Activity Logs
+    Route::get(
+        '/activity-logs',
+        [ActivityLogController::class, 'index']
+    );
+
+    Route::get(
+        '/activity-logs/summary',
+        [ActivityLogController::class, 'summary']
+    );
 });

@@ -1,3 +1,4 @@
+
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -6,9 +7,13 @@ import {
     LockKeyhole,
     Eye,
     EyeOff,
+    AlertCircle,
+    LoaderCircle,
+    ShieldCheck,
 } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000/api";
+const REQUEST_TIMEOUT = 15000;
 
 export default function Login() {
     const navigate = useNavigate();
@@ -23,12 +28,8 @@ export default function Login() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
-    // =========================================================
-    // HANDLE INPUT
-    // =========================================================
-
-    function handleChange(e) {
-        const { name, value } = e.target;
+    function handleChange(event) {
+        const { name, value } = event.target;
 
         setForm((previous) => ({
             ...previous,
@@ -38,12 +39,64 @@ export default function Login() {
         setError("");
     }
 
-    // =========================================================
-    // LOGIN
-    // =========================================================
+    function getLoginError(requestError) {
+        const status = requestError.response?.status;
+        const data = requestError.response?.data;
 
-    async function handleSubmit(e) {
-        e.preventDefault();
+        if (!requestError.response) {
+            if (requestError.code === "ECONNABORTED") {
+                return "The server took too long to respond. Please check that Laravel is running.";
+            }
+
+            return "Cannot connect to Laravel. Check your backend server and API configuration.";
+        }
+
+        if (status === 401) {
+            return data?.message ||
+                "The email or password is incorrect.";
+        }
+
+        if (status === 403) {
+            return data?.message ||
+                "Your account is inactive or is not authorized to access UniTeq.";
+        }
+
+        if (status === 422) {
+            const validationErrors = data?.errors;
+
+            if (validationErrors) {
+                const messages = Object.values(validationErrors)
+                    .flat()
+                    .filter((message) => typeof message === "string");
+
+                if (messages.length > 0) {
+                    return messages.join(" ");
+                }
+            }
+
+            return data?.message ||
+                "Please check your login information.";
+        }
+
+        if (status >= 500) {
+            return "The server encountered an error. Please try again or check the Laravel logs.";
+        }
+
+        return data?.message ||
+            "Unable to complete your login request. Please try again.";
+    }
+
+    function clearSavedAuthentication() {
+        const keys = ["uniteq_token", "uniteq_user"];
+
+        keys.forEach((key) => {
+            localStorage.removeItem(key);
+            sessionStorage.removeItem(key);
+        });
+    }
+
+    async function handleSubmit(event) {
+        event.preventDefault();
 
         setError("");
 
@@ -51,7 +104,12 @@ export default function Login() {
         const password = form.password;
 
         if (!email) {
-            setError("Please enter your email.");
+            setError("Please enter your email address.");
+            return;
+        }
+
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            setError("Please enter a valid email address.");
             return;
         }
 
@@ -63,96 +121,51 @@ export default function Login() {
         setLoading(true);
 
         try {
-            console.log("=================================");
-            console.log("UNI TEQ LOGIN");
-            console.log("Email:", email);
-            console.log("Sending login request...");
-            console.log("=================================");
-
-            // -------------------------------------------------
-            // LOGIN REQUEST
-            // -------------------------------------------------
-
             const response = await axios.post(
                 `${API_URL}/login`,
-                {
-                    email: email,
-                    password: password,
-                },
+                { email, password },
                 {
                     headers: {
                         Accept: "application/json",
                         "Content-Type": "application/json",
                     },
-                    timeout: 10000,
+                    timeout: REQUEST_TIMEOUT,
                 }
-            );
-
-            console.log(
-                "LOGIN RESPONSE:",
-                response.data
             );
 
             const token = response.data?.token;
             const user = response.data?.user;
 
-            // -------------------------------------------------
-            // CHECK SERVER RESPONSE
-            // -------------------------------------------------
-
-            if (!token) {
+            if (
+                typeof token !== "string" ||
+                !token.trim() ||
+                !user ||
+                typeof user !== "object" ||
+                Array.isArray(user)
+            ) {
                 setError(
-                    "Login succeeded, but no authentication token was returned."
+                    "The server response is incomplete. Please check your Laravel login controller."
                 );
                 return;
             }
 
-            if (!user) {
-                setError(
-                    "Login succeeded, but no user information was returned."
-                );
-                return;
-            }
-
-            // -------------------------------------------------
-            // GET USER ROLE
-            // -------------------------------------------------
-
-            const role = String(
-                user.role || ""
-            ).trim();
-
-            console.log(
-                "Authenticated user:",
-                user
-            );
-
-            console.log(
-                "User role:",
-                role
-            );
-
-            // -------------------------------------------------
-            // VALID ROLES
-            // -------------------------------------------------
+            const role = String(user.role || "").trim();
+            const normalizedStatus = String(
+                user.status ?? "Active"
+            ).trim().toLowerCase();
 
             if (
                 role !== "System Administrator" &&
                 role !== "Cashier"
             ) {
                 setError(
-                    "This account does not have a valid UniTeq role."
+                    "This account does not have a recognized UniTeq role. Please contact the System Administrator."
                 );
                 return;
             }
 
-            // -------------------------------------------------
-            // ACCOUNT STATUS
-            // -------------------------------------------------
-
             if (
-                user.status &&
-                user.status !== "Active"
+                normalizedStatus !== "active"
             ) {
                 setError(
                     "Your account is inactive. Please contact the System Administrator."
@@ -160,543 +173,323 @@ export default function Login() {
                 return;
             }
 
-            // -------------------------------------------------
-            // CLEAR OLD AUTHENTICATION
-            // -------------------------------------------------
+            // Clear any previous login session before saving this one.
+            clearSavedAuthentication();
 
-            localStorage.removeItem(
-                "uniteq_token"
-            );
+            const storage = rememberMe
+                ? localStorage
+                : sessionStorage;
 
-            localStorage.removeItem(
-                "uniteq_user"
-            );
+            storage.setItem("uniteq_token", token);
+            storage.setItem("uniteq_user", JSON.stringify(user));
 
-            sessionStorage.removeItem(
-                "uniteq_token"
-            );
+            // Set the default header for requests made using axios directly.
+            axios.defaults.headers.common["Accept"] = "application/json";
+            axios.defaults.headers.common["Authorization"] =
+                `Bearer ${token}`;
 
-            sessionStorage.removeItem(
-                "uniteq_user"
-            );
-
-            // -------------------------------------------------
-            // SAVE NEW AUTHENTICATION
-            // -------------------------------------------------
-
-            if (rememberMe) {
-                localStorage.setItem(
-                    "uniteq_token",
-                    token
-                );
-
-                localStorage.setItem(
-                    "uniteq_user",
-                    JSON.stringify(user)
-                );
-            } else {
-                sessionStorage.setItem(
-                    "uniteq_token",
-                    token
-                );
-
-                sessionStorage.setItem(
-                    "uniteq_user",
-                    JSON.stringify(user)
-                );
-            }
-
-            // -------------------------------------------------
-            // CONFIGURE AXIOS
-            // -------------------------------------------------
-
-            axios.defaults.headers.common[
-                "Authorization"
-            ] = `Bearer ${token}`;
-
-            axios.defaults.headers.common[
-                "Accept"
-            ] = "application/json";
-
-            console.log(
-                "LOGIN SUCCESSFUL"
-            );
-
-            // -------------------------------------------------
-            // GO TO DASHBOARD
-            // -------------------------------------------------
-
-            navigate("/dashboard", {
-                replace: true,
-            });
-
-        } catch (error) {
+            navigate("/dashboard", { replace: true });
+        } catch (requestError) {
             console.error(
-                "================================="
+                "UniTeq login request failed:",
+                requestError.response?.status || requestError.code || "Network error"
             );
 
-            console.error(
-                "LOGIN ERROR:",
-                error
-            );
-
-            console.error(
-                "STATUS:",
-                error.response?.status
-            );
-
-            console.error(
-                "SERVER RESPONSE:",
-                error.response?.data
-            );
-
-            console.error(
-                "================================="
-            );
-
-            // -------------------------------------------------
-            // ERROR HANDLING
-            // -------------------------------------------------
-
-            if (
-                error.response?.status === 401
-            ) {
-                const message =
-                    error.response?.data?.message;
-
-                const validationErrors =
-                    error.response?.data?.errors;
-
-                if (validationErrors) {
-                    setError(
-                        Object.values(
-                            validationErrors
-                        )
-                            .flat()
-                            .join(" ")
-                    );
-                } else {
-                    setError(
-                        message ||
-                        "The email or password is incorrect."
-                    );
-                }
-
-            } else if (
-                error.response?.status === 403
-            ) {
-                setError(
-                    error.response?.data?.message ||
-                    "Your account is not authorized to access UniTeq."
-                );
-
-            } else if (
-                error.response?.status === 422
-            ) {
-                const validationErrors =
-                    error.response?.data?.errors;
-
-                if (validationErrors) {
-                    setError(
-                        Object.values(
-                            validationErrors
-                        )
-                            .flat()
-                            .join(" ")
-                    );
-                } else {
-                    setError(
-                        error.response?.data?.message ||
-                        "Please check your login information."
-                    );
-                }
-
-            } else if (
-                error.response
-            ) {
-                setError(
-                    error.response?.data?.message ||
-                    "Unable to complete the login request."
-                );
-
-            } else if (
-                error.code === "ECONNABORTED"
-            ) {
-                setError(
-                    "The server took too long to respond. Please make sure Laravel is running."
-                );
-
-            } else {
-                setError(
-                    "Unable to connect to Laravel. Please make sure the Laravel server is running."
-                );
-            }
-
+            setError(getLoginError(requestError));
         } finally {
             setLoading(false);
         }
     }
 
-    // =========================================================
-    // FORGOT PASSWORD
-    // =========================================================
-
     function handleForgotPassword() {
-        alert(
+        window.alert(
             "Please contact the System Administrator to reset your password."
         );
     }
 
-    // =========================================================
-    // CREATE ACCOUNT
-    // =========================================================
-
     function handleCreateAccount() {
-        alert(
-            "Please contact the System Administrator to create a UniTeq account."
+        window.alert(
+            "UniTeq accounts are created by the System Administrator. Please contact your administrator to request an account."
         );
     }
 
-    // =========================================================
-    // UI
-    // =========================================================
-
     return (
-        <div className="min-h-screen bg-[#10284d] flex flex-col overflow-hidden">
+        <div className="flex min-h-screen flex-col overflow-hidden bg-[#10284d]">
 
-            {/* =====================================================
-                TOP HEADER
-            ====================================================== */}
-
-            <header className="relative z-20 bg-[#10284d] px-6 sm:px-10 lg:px-20 py-5">
-
-                <div className="max-w-7xl mx-auto flex items-center justify-center lg:justify-start gap-5">
-
-                    {/* LOGO */}
-
-                    <div className="w-20 h-20 sm:w-24 sm:h-24 flex-shrink-0">
-
+            {/* University Header */}
+            <header className="relative z-10 bg-[#10284d] px-5 py-5 sm:px-8 lg:px-16">
+                <div className="mx-auto flex max-w-7xl items-center justify-center gap-4 sm:justify-start sm:gap-5">
+                    <div className="h-16 w-16 shrink-0 sm:h-20 sm:w-20 lg:h-24 lg:w-24">
                         <img
                             src="/Uniteq.png"
-                            alt="Uniteq Team Logo"
-                            className="w-full h-full object-contain drop-shadow-lg"
+                            alt="UniTeq Team Logo"
+                            className="h-full w-full object-contain drop-shadow-lg"
                         />
-
                     </div>
 
+                    <div className="min-w-0 text-center text-white sm:text-left">
+                        <h1 className="font-serif text-lg font-semibold tracking-wide sm:text-2xl lg:text-3xl">
+                            UNIVERSITY OF ABRA
+                        </h1>
 
-                    {/* HEADER TEXT */}
+                        <p className="mt-1 text-sm text-blue-100 sm:text-base">
+                            Main Campus Cashier's Unit
+                        </p>
 
-                    <div className="text-white">
-
-                        <div className="flex flex-col">
-
-                            <h1 className="text-lg sm:text-2xl lg:text-3xl font-serif font-semibold tracking-wide">
-                                UNIVERSITY OF ABRA
-                                <span className="hidden sm:inline">
-                                    {" "} | Main Campus Cashier's Unit
-                                </span>
-                            </h1>
-
-                            <p className="sm:hidden text-sm text-blue-100 mt-1">
-                                Main Campus Cashier's Unit
-                            </p>
-
-                            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-serif font-bold tracking-wide leading-tight mt-1">
-                                Financial Management System
-                            </h2>
-
-                        </div>
-
+                        <h2 className="mt-1 text-base font-bold leading-tight tracking-wide sm:text-xl lg:text-3xl">
+                            Financial Management System
+                        </h2>
                     </div>
-
                 </div>
-
             </header>
 
+            {/* Login Area */}
+            <main className="relative flex flex-1 items-center justify-center overflow-hidden px-4 py-8 sm:px-8 sm:py-10">
 
-            {/* =====================================================
-                MAIN AREA
-            ====================================================== */}
-
-            <main className="relative flex-1 flex items-center justify-center px-5 py-10 sm:px-8 lg:px-12 overflow-hidden">
-
-                {/* BACKGROUND DECORATION */}
-
+                {/* Background */}
                 <div className="absolute inset-0 bg-gradient-to-b from-[#10284d] via-[#15345f] to-[#0c1f3c]" />
 
+                <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -left-40 top-10 h-[400px] w-[400px] rounded-full border border-white/10 sm:h-[500px] sm:w-[500px]"
+                />
 
-                {/* ABSTRACT CIRCLES */}
+                <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute -right-40 bottom-0 h-[450px] w-[450px] rounded-full border border-white/10 sm:h-[600px] sm:w-[600px]"
+                />
 
-                <div className="absolute -left-40 top-10 w-[500px] h-[500px] rounded-full border border-white/5" />
+                <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-slate-200/20 to-transparent"
+                />
 
-                <div className="absolute -left-20 top-24 w-[400px] h-[400px] rounded-full border border-white/5" />
+                {/* Login Card */}
+                <div className="relative z-10 w-full max-w-[500px]">
+                    <div className="overflow-hidden rounded-3xl border border-white/20 bg-[#f8fbfd] shadow-[0_25px_70px_rgba(0,0,0,0.35)]">
 
-                <div className="absolute right-[-180px] bottom-[-180px] w-[600px] h-[600px] rounded-full border border-white/5" />
+                        <div className="px-6 pb-8 pt-8 sm:px-10 sm:pb-10 sm:pt-9">
 
-                <div className="absolute right-[-100px] bottom-[-100px] w-[450px] h-[450px] rounded-full border border-white/5" />
-
-
-                {/* OFFICE / LAPTOP EFFECT */}
-
-                <div className="absolute left-0 right-0 bottom-0 h-[42%] bg-gradient-to-t from-[#d8d4ca] via-[#eeeae1]/40 to-transparent opacity-40" />
-
-
-                {/* =================================================
-                    LOGIN CARD
-                ================================================== */}
-
-                <div className="relative z-10 w-full max-w-[535px]">
-
-                    <div className="bg-[#f8fbfd] rounded-[22px] shadow-[0_25px_70px_rgba(0,0,0,0.35)] px-7 py-8 sm:px-12 sm:py-10">
-
-                        {/* LOGO */}
-
-                        <div className="flex justify-center">
-
-                            <div className="w-32 h-32 sm:w-40 sm:h-40 flex items-center justify-center">
-
-                                <img
-                                    src="/university-of-abra-logo.png"
-                                    alt="University of Abra Logo"
-                                    className="w-full h-full object-contain drop-shadow-xl"
-                                />
-
+                            {/* University Logo */}
+                            <div className="flex justify-center">
+                                <div className="flex h-28 w-28 items-center justify-center sm:h-36 sm:w-36">
+                                    <img
+                                        src="/university-of-abra-logo.png"
+                                        alt="University of Abra Logo"
+                                        className="h-full w-full object-contain"
+                                    />
+                                </div>
                             </div>
 
-                        </div>
-
-
-                        {/* TITLE */}
-
-                        <div className="text-center mt-4">
-
-                            <h2 className="text-3xl sm:text-4xl font-bold text-[#10284d] tracking-tight">
-                                Secure Login
-                            </h2>
-
-                        </div>
-
-
-                        {/* ERROR */}
-
-                        {error && (
-
-                            <div className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
-
-                                <div className="flex items-start gap-3">
-
-                                    <div className="w-6 h-6 rounded-full bg-red-100 text-red-700 flex items-center justify-center font-bold text-sm flex-shrink-0">
-                                        !
-                                    </div>
-
-                                    <p className="text-sm text-red-700 leading-relaxed">
-                                        {error}
-                                    </p>
-
+                            {/* Heading */}
+                            <div className="mt-4 text-center">
+                                <div className="inline-flex items-center gap-2 rounded-full bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-800">
+                                    <ShieldCheck size={15} />
+                                    Authorized Personnel Only
                                 </div>
 
+                                <h2 className="mt-4 text-3xl font-bold tracking-tight text-[#10284d] sm:text-4xl">
+                                    Secure Login
+                                </h2>
+
+                                <p className="mt-2 text-sm leading-6 text-slate-500">
+                                    Sign in to access the UniTeq Financial
+                                    Management System.
+                                </p>
                             </div>
 
-                        )}
-
-
-                        {/* =================================================
-                            FORM
-                        ================================================== */}
-
-                        <form
-                            onSubmit={handleSubmit}
-                            className="mt-7 space-y-4"
-                        >
-
-                            {/* EMAIL */}
-
-                            <div className="relative">
-
-                                <User
-                                    size={23}
-                                    strokeWidth={1.8}
-                                    className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
-                                />
-
-                                <input
-                                    type="email"
-                                    name="email"
-                                    value={form.email}
-                                    onChange={handleChange}
-                                    placeholder="University Username"
-                                    required
-                                    autoComplete="email"
-                                    disabled={loading}
-                                    className="w-full h-[54px] rounded-xl border border-gray-300 bg-white pl-12 pr-4 text-base sm:text-lg text-gray-800 placeholder:text-gray-500 outline-none transition focus:border-[#168fa0] focus:ring-4 focus:ring-[#168fa0]/10 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                />
-
-                            </div>
-
-
-                            {/* PASSWORD */}
-
-                            <div className="relative">
-
-                                <LockKeyhole
-                                    size={23}
-                                    strokeWidth={1.8}
-                                    className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
-                                />
-
-                                <input
-                                    type={
-                                        showPassword
-                                            ? "text"
-                                            : "password"
-                                    }
-                                    name="password"
-                                    value={form.password}
-                                    onChange={handleChange}
-                                    placeholder="Secure Password"
-                                    required
-                                    autoComplete="current-password"
-                                    disabled={loading}
-                                    className="w-full h-[54px] rounded-xl border border-gray-300 bg-white pl-12 pr-14 text-base sm:text-lg text-gray-800 placeholder:text-gray-500 outline-none transition focus:border-[#168fa0] focus:ring-4 focus:ring-[#168fa0]/10 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                                />
-
-
-                                {/* SHOW PASSWORD */}
-
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        setShowPassword(
-                                            !showPassword
-                                        )
-                                    }
-                                    disabled={loading}
-                                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-[#168fa0] transition disabled:opacity-50"
-                                    aria-label={
-                                        showPassword
-                                            ? "Hide password"
-                                            : "Show password"
-                                    }
+                            {/* Error Message */}
+                            {error && (
+                                <div
+                                    role="alert"
+                                    aria-live="assertive"
+                                    className="mt-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3.5 text-red-800"
                                 >
-
-                                    {showPassword ? (
-                                        <EyeOff size={22} />
-                                    ) : (
-                                        <Eye size={22} />
-                                    )}
-
-                                </button>
-
-                            </div>
-
-
-                            {/* REMEMBER + FORGOT */}
-
-                            <div className="flex items-center justify-between px-1">
-
-                                {/* REMEMBER */}
-
-                                <label className="flex items-center gap-2 cursor-pointer select-none">
-
-                                    <input
-                                        type="checkbox"
-                                        checked={rememberMe}
-                                        onChange={(e) =>
-                                            setRememberMe(
-                                                e.target.checked
-                                            )
-                                        }
-                                        disabled={loading}
-                                        className="appearance-none w-5 h-5 rounded-full border-2 border-[#168fa0] bg-white checked:bg-[#168fa0] relative cursor-pointer disabled:opacity-50"
+                                    <AlertCircle
+                                        size={20}
+                                        className="mt-0.5 shrink-0"
                                     />
 
-                                    <span className="text-base text-gray-800">
+                                    <div className="text-sm leading-5">
+                                        <p className="font-semibold">
+                                            Login Unsuccessful
+                                        </p>
+                                        <p className="mt-1">{error}</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Login Form */}
+                            <form
+                                onSubmit={handleSubmit}
+                                className="mt-7 space-y-5"
+                            >
+                                {/* Email */}
+                                <div>
+                                    <label
+                                        htmlFor="login-email"
+                                        className="mb-2 block text-sm font-semibold text-slate-700"
+                                    >
+                                        Email Address
+                                    </label>
+
+                                    <div className="relative">
+                                        <User
+                                            size={21}
+                                            aria-hidden="true"
+                                            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+                                        />
+
+                                        <input
+                                            id="login-email"
+                                            type="email"
+                                            name="email"
+                                            value={form.email}
+                                            onChange={handleChange}
+                                            placeholder="Enter your email address"
+                                            autoComplete="username"
+                                            maxLength={255}
+                                            required
+                                            disabled={loading}
+                                            className="h-[54px] w-full rounded-xl border border-slate-300 bg-white pl-12 pr-4 text-base text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-4 focus:ring-teal-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Password */}
+                                <div>
+                                    <label
+                                        htmlFor="login-password"
+                                        className="mb-2 block text-sm font-semibold text-slate-700"
+                                    >
+                                        Password
+                                    </label>
+
+                                    <div className="relative">
+                                        <LockKeyhole
+                                            size={21}
+                                            aria-hidden="true"
+                                            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+                                        />
+
+                                        <input
+                                            id="login-password"
+                                            type={
+                                                showPassword
+                                                    ? "text"
+                                                    : "password"
+                                            }
+                                            name="password"
+                                            value={form.password}
+                                            onChange={handleChange}
+                                            placeholder="Enter your password"
+                                            autoComplete="current-password"
+                                            required
+                                            disabled={loading}
+                                            className="h-[54px] w-full rounded-xl border border-slate-300 bg-white pl-12 pr-12 text-base text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-4 focus:ring-teal-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                        />
+
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setShowPassword((value) => !value)
+                                            }
+                                            disabled={loading}
+                                            aria-label={
+                                                showPassword
+                                                    ? "Hide password"
+                                                    : "Show password"
+                                            }
+                                            aria-pressed={showPassword}
+                                            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-teal-700 disabled:opacity-50"
+                                        >
+                                            {showPassword ? (
+                                                <EyeOff size={20} />
+                                            ) : (
+                                                <Eye size={20} />
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Remember Me and Forgot Password */}
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                                        <input
+                                            type="checkbox"
+                                            checked={rememberMe}
+                                            onChange={(event) =>
+                                                setRememberMe(event.target.checked)
+                                            }
+                                            disabled={loading}
+                                            className="h-4 w-4 rounded border-slate-300 accent-teal-700 focus:ring-teal-600 disabled:opacity-50"
+                                        />
                                         Remember me
-                                    </span>
+                                    </label>
 
-                                </label>
+                                    <button
+                                        type="button"
+                                        onClick={handleForgotPassword}
+                                        disabled={loading}
+                                        className="text-sm font-semibold text-[#10284d] transition hover:text-teal-700 disabled:opacity-50"
+                                    >
+                                        Forgot Password?
+                                    </button>
+                                </div>
 
-
-                                {/* FORGOT PASSWORD */}
-
+                                {/* Submit */}
                                 <button
-                                    type="button"
-                                    onClick={
-                                        handleForgotPassword
-                                    }
+                                    type="submit"
                                     disabled={loading}
-                                    className="text-base text-[#10284d] hover:text-[#168fa0] transition disabled:opacity-50"
+                                    className="flex h-[54px] w-full items-center justify-center gap-2 rounded-xl bg-[#1595a5] px-5 text-base font-bold tracking-wide text-white shadow-md transition hover:-translate-y-0.5 hover:bg-[#108493] hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-teal-200 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-teal-400"
                                 >
-                                    Forgot Password?
+                                    {loading ? (
+                                        <>
+                                            <LoaderCircle
+                                                size={20}
+                                                className="animate-spin"
+                                            />
+                                            Signing In...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <ShieldCheck size={20} />
+                                            LOG IN
+                                        </>
+                                    )}
                                 </button>
 
-                            </div>
-
-
-                            {/* =================================================
-                                LOGIN BUTTON
-                            ================================================== */}
-
-                            <button
-                                type="submit"
-                                disabled={loading}
-                                className={`w-full h-[54px] rounded-full text-white text-lg font-bold tracking-wide shadow-lg transition-all duration-200 ${
-                                    loading
-                                        ? "bg-[#73aeb5] cursor-not-allowed"
-                                        : "bg-[#1595a5] hover:bg-[#108493] hover:-translate-y-0.5 hover:shadow-xl"
-                                }`}
-                            >
-
-                                {loading
-                                    ? "LOGGING IN..."
-                                    : "LOG IN"}
-
-                            </button>
-
-
-                            {/* CREATE ACCOUNT */}
-
-                            <button
-                                type="button"
-                                onClick={
-                                    handleCreateAccount
-                                }
-                                disabled={loading}
-                                className="w-full text-center text-base text-gray-800 hover:text-[#168fa0] transition pt-1 disabled:opacity-50"
-                            >
-                                New User?{" "}
-                                <span className="font-medium">
-                                    Create Account
-                                </span>
-                            </button>
-
-                        </form>
-
-                    </div>
-
-
-                    {/* =================================================
-                        PROPERTY NOTICE
-                    ================================================== */}
-
-                    <div className="mt-5 text-center">
-
-                        <div className="inline-block rounded-lg bg-black/50 backdrop-blur-sm px-5 py-2.5 shadow-lg">
-
-                            <p className="text-sm sm:text-base text-white/90">
-                                Property of University of Abra -
-                                Internal Financial System
-                            </p>
-
+                                {/* Create Account */}
+                                <div className="pt-1 text-center">
+                                    <p className="text-sm text-slate-600">
+                                        Need an account?{" "}
+                                        <button
+                                            type="button"
+                                            onClick={handleCreateAccount}
+                                            disabled={loading}
+                                            className="font-semibold text-[#10284d] underline decoration-teal-500 underline-offset-4 transition hover:text-teal-700 disabled:opacity-50"
+                                        >
+                                            Contact the Administrator
+                                        </button>
+                                    </p>
+                                </div>
+                            </form>
                         </div>
 
+                        {/* Card Footer */}
+                        <div className="border-t border-slate-200 bg-slate-50 px-6 py-4 text-center">
+                            <p className="text-xs leading-5 text-slate-500">
+                                Property of University of Abra · Internal
+                                Financial System
+                            </p>
+                        </div>
                     </div>
 
+                    <p className="mt-5 text-center text-xs leading-5 text-blue-100/80">
+                        Please keep your account credentials confidential.
+                    </p>
                 </div>
-
             </main>
-
         </div>
     );
 }
