@@ -14,9 +14,7 @@ import {
     History,
     X,
 } from "lucide-react";
-import axios from "axios";
-
-const API_BASE_URL = "http://127.0.0.1:8000/api";
+import api from "../api/api";
 
 const REVIEW_STATUSES = [
     "Pending",
@@ -41,38 +39,13 @@ const DATA_ISSUES = [
     "Negative amount",
 ];
 
-function getHeaders() {
-    const token =
-        localStorage.getItem("uniteq_token") ||
-        sessionStorage.getItem("uniteq_token") ||
-        localStorage.getItem("token") ||
-        sessionStorage.getItem("token");
-
-    return {
-        Accept: "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-}
-
-/**
- * Supports common Laravel response structures:
- * - [...]
- * - { data: [...] }
- * - { data: { data: [...] } }
- * - { receipts: [...] }
- * - { reviews: [...] }
- */
 function getArray(response) {
     let data = response?.data ?? response;
 
     for (let depth = 0; depth < 5; depth += 1) {
-        if (Array.isArray(data)) {
-            return data;
-        }
+        if (Array.isArray(data)) return data;
 
-        if (!data || typeof data !== "object") {
-            return [];
-        }
+        if (!data || typeof data !== "object") return [];
 
         const arrayKeys = [
             "receipts",
@@ -86,9 +59,7 @@ function getArray(response) {
 
         const key = arrayKeys.find((item) => Array.isArray(data[item]));
 
-        if (key) {
-            return data[key];
-        }
+        if (key) return data[key];
 
         const nestedKeys = [
             "data",
@@ -107,9 +78,7 @@ function getArray(response) {
                 !Array.isArray(data[item])
         );
 
-        if (!nestedKey) {
-            return [];
-        }
+        if (!nestedKey) return [];
 
         data = data[nestedKey];
     }
@@ -144,9 +113,7 @@ function getSingleRecord(response) {
                 !Array.isArray(data[key])
         );
 
-        if (!nestedKey) {
-            return null;
-        }
+        if (!nestedKey) return null;
 
         data = data[nestedKey];
     }
@@ -168,10 +135,12 @@ function getAmount(record) {
     const value = getAmountValue(record);
     const amount = Number(value);
 
-    return value !== null &&
+    return (
+        value !== null &&
         value !== undefined &&
         String(value).trim() !== "" &&
         Number.isFinite(amount)
+    )
         ? amount
         : 0;
 }
@@ -324,7 +293,9 @@ function normalizeType(type) {
         return "Receipt";
     }
 
-    if (["voucher", "vouchers", "disbursement", "disbursements"].includes(value)) {
+    if (
+        ["voucher", "vouchers", "disbursement", "disbursements"].includes(value)
+    ) {
         return "Voucher";
     }
 
@@ -384,13 +355,9 @@ function buildDuplicateMap(records) {
     for (const record of records) {
         if (!record.number) continue;
 
-        const key = `${record.type}:${record.number
-            .trim()
-            .toLowerCase()}`;
+        const key = `${record.type}:${record.number.trim().toLowerCase()}`;
 
-        if (!groups.has(key)) {
-            groups.set(key, []);
-        }
+        if (!groups.has(key)) groups.set(key, []);
 
         groups.get(key).push(record.id);
     }
@@ -430,10 +397,7 @@ function ReviewHistoryTimeline({ history, loading, error }) {
     if (history.length === 0) {
         return (
             <div className="rounded-xl border border-dashed border-gray-300 p-5 text-center">
-                <History
-                    size={28}
-                    className="mx-auto text-gray-400"
-                />
+                <History size={28} className="mx-auto text-gray-400" />
 
                 <p className="mt-2 font-semibold text-gray-700">
                     No review history yet
@@ -492,8 +456,7 @@ function ReviewHistoryTimeline({ history, loading, error }) {
                                 </p>
 
                                 <p className="mt-1 text-sm text-gray-800">
-                                    {entry.previous_status ||
-                                        "No previous status"}
+                                    {entry.previous_status || "No previous status"}
                                 </p>
                             </div>
 
@@ -515,8 +478,7 @@ function ReviewHistoryTimeline({ history, loading, error }) {
                                 </p>
 
                                 <p className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-700">
-                                    {entry.previous_notes ||
-                                        "No previous notes"}
+                                    {entry.previous_notes || "No previous notes"}
                                 </p>
                             </div>
 
@@ -568,19 +530,16 @@ export default function Reconciliation() {
     const [loadingHistory, setLoadingHistory] = useState(false);
     const [historyError, setHistoryError] = useState("");
 
+    // Load receipts, vouchers, and accounting reviews using the shared API.
     const loadRecords = useCallback(async () => {
         setLoading(true);
         setErrorMessage("");
 
         try {
-            const headers = getHeaders();
-
             const results = await Promise.allSettled([
-                axios.get(`${API_BASE_URL}/receipts`, { headers }),
-                axios.get(`${API_BASE_URL}/vouchers`, { headers }),
-                axios.get(`${API_BASE_URL}/accounting-reviews`, {
-                    headers,
-                }),
+                api.get("/receipts", { timeout: 15000 }),
+                api.get("/vouchers", { timeout: 15000 }),
+                api.get("/accounting-reviews", { timeout: 15000 }),
             ]);
 
             const [receiptResult, voucherResult, reviewResult] = results;
@@ -589,6 +548,7 @@ export default function Reconciliation() {
             if (receiptResult.status === "fulfilled") {
                 setCollections(getArray(receiptResult.value));
             } else {
+                console.error("Loading receipts failed:", receiptResult.reason);
                 setCollections([]);
                 errors.push("receipts");
             }
@@ -596,6 +556,7 @@ export default function Reconciliation() {
             if (voucherResult.status === "fulfilled") {
                 setVouchers(getArray(voucherResult.value));
             } else {
+                console.error("Loading vouchers failed:", voucherResult.reason);
                 setVouchers([]);
                 errors.push("vouchers");
             }
@@ -603,6 +564,10 @@ export default function Reconciliation() {
             if (reviewResult.status === "fulfilled") {
                 setReviews(getArray(reviewResult.value));
             } else {
+                console.error(
+                    "Loading accounting reviews failed:",
+                    reviewResult.reason
+                );
                 setReviews([]);
                 errors.push("accounting reviews");
             }
@@ -640,9 +605,9 @@ export default function Reconciliation() {
         setHistoryError("");
 
         try {
-            const response = await axios.get(
-                `${API_BASE_URL}/accounting-reviews/${reviewId}/history`,
-                { headers: getHeaders() }
+            const response = await api.get(
+                `/accounting-reviews/${reviewId}/history`,
+                { timeout: 15000 }
             );
 
             setReviewHistory(getArray(response));
@@ -772,11 +737,12 @@ export default function Reconciliation() {
             allRecords.map((record) => {
                 const issues = [];
 
-                const review = record.sourceId == null
-                    ? null
-                    : reviewMap.get(
-                          `${record.type}:${String(record.sourceId)}`
-                      ) || null;
+                const review =
+                    record.sourceId == null
+                        ? null
+                        : reviewMap.get(
+                              `${record.type}:${String(record.sourceId)}`
+                          ) || null;
 
                 if (!record.number) {
                     issues.push("Missing reference number");
@@ -902,18 +868,14 @@ export default function Reconciliation() {
 
                 if (
                     reviewFilter === "duplicates" &&
-                    !record.issues.includes(
-                        "Duplicate reference number"
-                    )
+                    !record.issues.includes("Duplicate reference number")
                 ) {
                     return false;
                 }
 
                 if (
                     reviewFilter === "data" &&
-                    !record.issues.some((issue) =>
-                        DATA_ISSUES.includes(issue)
-                    )
+                    !record.issues.some((issue) => DATA_ISSUES.includes(issue))
                 ) {
                     return false;
                 }
@@ -970,9 +932,7 @@ export default function Reconciliation() {
 
                 return true;
             })
-            .sort((a, b) =>
-                (b.date || "").localeCompare(a.date || "")
-            );
+            .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
     }, [
         filteredRecords,
         recordType,
@@ -989,9 +949,7 @@ export default function Reconciliation() {
         record.issues.some((issue) => DATA_ISSUES.includes(issue))
     ).length;
 
-    const unpaidCount = voucherRecords.filter(
-        (record) => !record.paid
-    ).length;
+    const unpaidCount = voucherRecords.filter((record) => !record.paid).length;
 
     const issueCount = enrichedRecords.filter(
         (record) => record.issues.length > 0
@@ -1030,6 +988,7 @@ export default function Reconciliation() {
         }
     };
 
+    // Save the review through the shared Axios instance.
     const saveReview = async () => {
         if (savingReview) return;
 
@@ -1048,20 +1007,13 @@ export default function Reconciliation() {
             return;
         }
 
-        if (!getHeaders().Authorization) {
-            setErrorMessage(
-                "You are not signed in. Sign in again before saving a review."
-            );
-            return;
-        }
-
         setSavingReview(true);
         setErrorMessage("");
         setSuccessMessage("");
 
         try {
-            const response = await axios.post(
-                `${API_BASE_URL}/accounting-reviews`,
+            const response = await api.post(
+                "/accounting-reviews",
                 {
                     record_type: selectedRecord.reviewType,
                     record_id: selectedRecord.sourceId,
@@ -1069,12 +1021,7 @@ export default function Reconciliation() {
                     review_status: reviewStatus,
                     review_notes: reviewNotes.trim() || null,
                 },
-                {
-                    headers: {
-                        ...getHeaders(),
-                        "Content-Type": "application/json",
-                    },
-                }
+                { timeout: 15000 }
             );
 
             const savedReview = getSingleRecord(response);
@@ -1180,8 +1127,7 @@ export default function Reconciliation() {
                             </h1>
 
                             <p className="mt-2 text-sm text-blue-100">
-                                Identify discrepancies and document
-                                accounting reviews.
+                                Identify discrepancies and document accounting reviews.
                             </p>
                         </div>
                     </div>
@@ -1207,10 +1153,7 @@ export default function Reconciliation() {
                         role="alert"
                         className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900"
                     >
-                        <AlertCircle
-                            className="mt-0.5 shrink-0"
-                            size={20}
-                        />
+                        <AlertCircle className="mt-0.5 shrink-0" size={20} />
 
                         <div className="min-w-0">
                             <p className="font-semibold">Notice</p>
@@ -1309,10 +1252,7 @@ export default function Reconciliation() {
 
                 <section className="rounded-2xl border border-blue-100 bg-blue-50 p-5">
                     <div className="flex items-start gap-3">
-                        <AlertCircle
-                            className="mt-0.5 shrink-0 text-blue-700"
-                            size={22}
-                        />
+                        <AlertCircle className="mt-0.5 shrink-0 text-blue-700" size={22} />
 
                         <div>
                             <h2 className="font-bold text-blue-950">
@@ -1320,15 +1260,7 @@ export default function Reconciliation() {
                             </h2>
 
                             <p className="mt-1 text-sm leading-6 text-blue-900">
-                                Duplicate references and data issues are
-                                alerts for manual review, not proof of fraud
-                                or incorrect transactions. A voucher marked
-                                Paid is not independently verified by this
-                                page. Verify original documents, deposits,
-                                ledgers, and payment references before making
-                                accounting decisions. Review statuses document
-                                the review decision but do not change the
-                                original financial record.
+                                Duplicate references and data issues are alerts for manual review, not proof of fraud or incorrect transactions. A voucher marked Paid is not independently verified by this page. Verify original documents, deposits, ledgers, and payment references before making accounting decisions. Review statuses document the review decision but do not change the original financial record.
                             </p>
                         </div>
                     </div>
@@ -1343,8 +1275,7 @@ export default function Reconciliation() {
                                 </h2>
 
                                 <p className="mt-1 text-sm text-gray-500">
-                                    Search records, identify alerts, and
-                                    record review decisions.
+                                    Search records, identify alerts, and record review decisions.
                                 </p>
                             </div>
 
@@ -1358,9 +1289,7 @@ export default function Reconciliation() {
                                     <input
                                         type="search"
                                         value={searchTerm}
-                                        onChange={(event) =>
-                                            setSearchTerm(event.target.value)
-                                        }
+                                        onChange={(event) => setSearchTerm(event.target.value)}
                                         placeholder="Search reference, payer, payee, office, issue..."
                                         aria-label="Search reconciliation records"
                                         className="w-full rounded-xl border border-gray-300 py-3 pl-10 pr-4 outline-none focus:border-[#0797a6] focus:ring-2 focus:ring-[#0797a6]/20"
@@ -1369,43 +1298,25 @@ export default function Reconciliation() {
 
                                 <select
                                     value={recordType}
-                                    onChange={(event) =>
-                                        setRecordType(event.target.value)
-                                    }
+                                    onChange={(event) => setRecordType(event.target.value)}
                                     aria-label="Filter by record type"
                                     className="rounded-xl border border-gray-300 px-3 py-3 outline-none focus:border-[#0797a6]"
                                 >
-                                    <option value="all">
-                                        All record types
-                                    </option>
-                                    <option value="collections">
-                                        Receipts / collections
-                                    </option>
-                                    <option value="vouchers">
-                                        Vouchers
-                                    </option>
+                                    <option value="all">All record types</option>
+                                    <option value="collections">Receipts / collections</option>
+                                    <option value="vouchers">Vouchers</option>
                                 </select>
 
                                 <select
                                     value={statusFilter}
-                                    onChange={(event) =>
-                                        setStatusFilter(event.target.value)
-                                    }
+                                    onChange={(event) => setStatusFilter(event.target.value)}
                                     aria-label="Filter by financial status"
                                     className="rounded-xl border border-gray-300 px-3 py-3 outline-none focus:border-[#0797a6]"
                                 >
-                                    <option value="all">
-                                        All financial statuses
-                                    </option>
-                                    <option value="paid">
-                                        Paid vouchers
-                                    </option>
-                                    <option value="pending">
-                                        Unpaid vouchers
-                                    </option>
-                                    <option value="collections">
-                                        Receipts only
-                                    </option>
+                                    <option value="all">All financial statuses</option>
+                                    <option value="paid">Paid vouchers</option>
+                                    <option value="pending">Unpaid vouchers</option>
+                                    <option value="collections">Receipts only</option>
                                 </select>
                             </div>
 
@@ -1415,32 +1326,16 @@ export default function Reconciliation() {
 
                                     <select
                                         value={reviewFilter}
-                                        onChange={(event) =>
-                                            setReviewFilter(event.target.value)
-                                        }
+                                        onChange={(event) => setReviewFilter(event.target.value)}
                                         className="mt-1 block w-full rounded-xl border border-gray-300 px-3 py-3 outline-none focus:border-[#0797a6]"
                                     >
-                                        <option value="all">
-                                            All records
-                                        </option>
-                                        <option value="issues">
-                                            All records requiring review
-                                        </option>
-                                        <option value="duplicates">
-                                            Duplicate references
-                                        </option>
-                                        <option value="data">
-                                            Missing / invalid information
-                                        </option>
-                                        <option value="unpaid">
-                                            Unpaid vouchers
-                                        </option>
-                                        <option value="reviewed">
-                                            Reviewed records
-                                        </option>
-                                        <option value="corrections">
-                                            Correction required
-                                        </option>
+                                        <option value="all">All records</option>
+                                        <option value="issues">All records requiring review</option>
+                                        <option value="duplicates">Duplicate references</option>
+                                        <option value="data">Missing / invalid information</option>
+                                        <option value="unpaid">Unpaid vouchers</option>
+                                        <option value="reviewed">Reviewed records</option>
+                                        <option value="corrections">Correction required</option>
                                     </select>
                                 </label>
 
@@ -1452,9 +1347,7 @@ export default function Reconciliation() {
                                             type="date"
                                             value={startDate}
                                             max={endDate || undefined}
-                                            onChange={(event) =>
-                                                setStartDate(event.target.value)
-                                            }
+                                            onChange={(event) => setStartDate(event.target.value)}
                                             className="mt-1 block w-full min-w-0 rounded-xl border border-gray-300 px-2 py-3 outline-none focus:border-[#0797a6] sm:px-3"
                                         />
                                     </label>
@@ -1466,9 +1359,7 @@ export default function Reconciliation() {
                                             type="date"
                                             value={endDate}
                                             min={startDate || undefined}
-                                            onChange={(event) =>
-                                                setEndDate(event.target.value)
-                                            }
+                                            onChange={(event) => setEndDate(event.target.value)}
                                             className="mt-1 block w-full min-w-0 rounded-xl border border-gray-300 px-2 py-3 outline-none focus:border-[#0797a6] sm:px-3"
                                         />
                                     </label>
@@ -1477,10 +1368,7 @@ export default function Reconciliation() {
 
                             <div className="flex flex-wrap items-center justify-between gap-3">
                                 <p className="text-sm text-gray-500">
-                                    <Filter
-                                        size={15}
-                                        className="mr-1 inline"
-                                    />
+                                    <Filter size={15} className="mr-1 inline" />
                                     {visibleRecords.length} matching records
                                 </p>
 
@@ -1524,44 +1412,28 @@ export default function Reconciliation() {
                             <tbody className="divide-y divide-gray-100">
                                 {loading ? (
                                     <tr>
-                                        <td
-                                            colSpan={10}
-                                            className="py-16 text-center text-gray-500"
-                                        >
-                                            <RefreshCw
-                                                size={26}
-                                                className="mx-auto mb-3 animate-spin"
-                                            />
+                                        <td colSpan={10} className="py-16 text-center text-gray-500">
+                                            <RefreshCw size={26} className="mx-auto mb-3 animate-spin" />
                                             Loading accounting records...
                                         </td>
                                     </tr>
                                 ) : visibleRecords.length === 0 ? (
                                     <tr>
-                                        <td
-                                            colSpan={10}
-                                            className="py-16 text-center text-gray-500"
-                                        >
-                                            <FileText
-                                                size={32}
-                                                className="mx-auto mb-3 text-gray-300"
-                                            />
+                                        <td colSpan={10} className="py-16 text-center text-gray-500">
+                                            <FileText size={32} className="mx-auto mb-3 text-gray-300" />
 
                                             <p className="font-semibold">
                                                 No matching records found.
                                             </p>
 
                                             <p className="mt-1 text-sm">
-                                                Try changing your filters or
-                                                refresh the records.
+                                                Try changing your filters or refresh the records.
                                             </p>
                                         </td>
                                     </tr>
                                 ) : (
                                     visibleRecords.map((record) => (
-                                        <tr
-                                            key={record.id}
-                                            className="transition hover:bg-blue-50/40"
-                                        >
+                                        <tr key={record.id} className="transition hover:bg-blue-50/40">
                                             <td className="px-5 py-4">
                                                 <span
                                                     className={`rounded-lg px-3 py-2 text-xs font-bold ${
@@ -1576,9 +1448,7 @@ export default function Reconciliation() {
 
                                             <td className="px-5 py-4 font-semibold text-[#102d55]">
                                                 {record.number || (
-                                                    <span className="text-red-700">
-                                                        Missing reference
-                                                    </span>
+                                                    <span className="text-red-700">Missing reference</span>
                                                 )}
                                             </td>
 
@@ -1587,10 +1457,7 @@ export default function Reconciliation() {
                                             </td>
 
                                             <td className="px-5 py-4">
-                                                <p className="font-semibold text-gray-900">
-                                                    {record.name}
-                                                </p>
-
+                                                <p className="font-semibold text-gray-900">{record.name}</p>
                                                 <p className="mt-1 max-w-xs truncate text-xs text-gray-500">
                                                     {record.purpose}
                                                 </p>
@@ -1632,20 +1499,15 @@ export default function Reconciliation() {
                                                     </span>
                                                 ) : (
                                                     <div className="space-y-1">
-                                                        {record.issues.map(
-                                                            (issue) => (
-                                                                <p
-                                                                    key={issue}
-                                                                    className="flex items-start gap-1 text-xs font-medium text-amber-800"
-                                                                >
-                                                                    <AlertCircle
-                                                                        size={14}
-                                                                        className="mt-0.5 shrink-0"
-                                                                    />
-                                                                    {issue}
-                                                                </p>
-                                                            )
-                                                        )}
+                                                        {record.issues.map((issue) => (
+                                                            <p
+                                                                key={issue}
+                                                                className="flex items-start gap-1 text-xs font-medium text-amber-800"
+                                                            >
+                                                                <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                                                                {issue}
+                                                            </p>
+                                                        ))}
                                                     </div>
                                                 )}
                                             </td>
@@ -1653,9 +1515,7 @@ export default function Reconciliation() {
                                             <td className="px-5 py-4">
                                                 <button
                                                     type="button"
-                                                    onClick={() =>
-                                                        openReview(record)
-                                                    }
+                                                    onClick={() => openReview(record)}
                                                     className="whitespace-nowrap rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-[#102d55] hover:bg-gray-50"
                                                 >
                                                     Review details
@@ -1669,13 +1529,9 @@ export default function Reconciliation() {
                     </div>
 
                     <div className="flex flex-col justify-between gap-2 border-t border-gray-200 px-6 py-4 text-sm text-gray-500 sm:flex-row">
+                        <span>Showing {visibleRecords.length} matching records</span>
                         <span>
-                            Showing {visibleRecords.length} matching records
-                        </span>
-
-                        <span>
-                            {filteredCollections.length} receipts ·{" "}
-                            {filteredVouchers.length} vouchers
+                            {filteredCollections.length} receipts · {filteredVouchers.length} vouchers
                         </span>
                     </div>
                 </section>
@@ -1685,9 +1541,7 @@ export default function Reconciliation() {
                 <div
                     className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4"
                     onMouseDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                            closeReview();
-                        }
+                        if (event.target === event.currentTarget) closeReview();
                     }}
                 >
                     <div
@@ -1706,8 +1560,7 @@ export default function Reconciliation() {
                                     id="reconciliation-dialog-title"
                                     className="mt-1 break-words text-xl font-bold text-[#102d55] sm:text-2xl"
                                 >
-                                    {selectedRecord.number ||
-                                        "Missing reference number"}
+                                    {selectedRecord.number || "Missing reference number"}
                                 </h2>
                             </div>
 
@@ -1725,74 +1578,46 @@ export default function Reconciliation() {
                         <div className="space-y-6 p-5 sm:p-6">
                             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
                                 <div>
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Record type
-                                    </p>
-                                    <p className="mt-1 font-semibold">
-                                        {selectedRecord.type}
-                                    </p>
+                                    <p className="text-xs uppercase text-gray-500">Record type</p>
+                                    <p className="mt-1 font-semibold">{selectedRecord.type}</p>
                                 </div>
 
                                 <div>
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Reference number
-                                    </p>
+                                    <p className="text-xs uppercase text-gray-500">Reference number</p>
                                     <p className="mt-1 break-words font-semibold">
                                         {selectedRecord.number || "Missing"}
                                     </p>
                                 </div>
 
                                 <div>
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Date
-                                    </p>
-                                    <p className="mt-1 font-semibold">
-                                        {formatDate(selectedRecord.date)}
-                                    </p>
+                                    <p className="text-xs uppercase text-gray-500">Date</p>
+                                    <p className="mt-1 font-semibold">{formatDate(selectedRecord.date)}</p>
                                 </div>
 
                                 <div>
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Payer / payee
-                                    </p>
-                                    <p className="mt-1 font-semibold">
-                                        {selectedRecord.name}
-                                    </p>
+                                    <p className="text-xs uppercase text-gray-500">Payer / payee</p>
+                                    <p className="mt-1 font-semibold">{selectedRecord.name}</p>
                                 </div>
 
                                 <div>
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Office / department
-                                    </p>
-                                    <p className="mt-1 font-semibold">
-                                        {selectedRecord.office}
-                                    </p>
+                                    <p className="text-xs uppercase text-gray-500">Office / department</p>
+                                    <p className="mt-1 font-semibold">{selectedRecord.office}</p>
                                 </div>
 
                                 <div>
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Financial status
-                                    </p>
-                                    <p className="mt-1 font-semibold">
-                                        {selectedRecord.status}
-                                    </p>
+                                    <p className="text-xs uppercase text-gray-500">Financial status</p>
+                                    <p className="mt-1 font-semibold">{selectedRecord.status}</p>
                                 </div>
 
                                 <div className="sm:col-span-2">
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Amount
-                                    </p>
-
+                                    <p className="text-xs uppercase text-gray-500">Amount</p>
                                     <p className="mt-1 text-xl font-bold text-[#102d55]">
                                         {formatCurrency(selectedRecord.amount)}
                                     </p>
                                 </div>
 
                                 <div className="sm:col-span-2">
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Purpose / particulars
-                                    </p>
-
+                                    <p className="text-xs uppercase text-gray-500">Purpose / particulars</p>
                                     <div className="mt-2 break-words rounded-xl bg-gray-50 p-4 text-sm leading-6 text-gray-700">
                                         {selectedRecord.purpose}
                                     </div>
@@ -1800,9 +1625,7 @@ export default function Reconciliation() {
                             </div>
 
                             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-                                <h3 className="font-bold text-amber-950">
-                                    Automatic alerts
-                                </h3>
+                                <h3 className="font-bold text-amber-950">Automatic alerts</h3>
 
                                 {selectedRecord.issues.length === 0 ? (
                                     <p className="mt-2 flex items-center gap-2 text-sm text-green-800">
@@ -1811,20 +1634,12 @@ export default function Reconciliation() {
                                     </p>
                                 ) : (
                                     <ul className="mt-3 space-y-2">
-                                        {selectedRecord.issues.map(
-                                            (issue) => (
-                                                <li
-                                                    key={issue}
-                                                    className="flex items-start gap-2 text-sm text-amber-900"
-                                                >
-                                                    <AlertCircle
-                                                        size={17}
-                                                        className="mt-0.5 shrink-0"
-                                                    />
-                                                    {issue}
-                                                </li>
-                                            )
-                                        )}
+                                        {selectedRecord.issues.map((issue) => (
+                                            <li key={issue} className="flex items-start gap-2 text-sm text-amber-900">
+                                                <AlertCircle size={17} className="mt-0.5 shrink-0" />
+                                                {issue}
+                                            </li>
+                                        ))}
                                     </ul>
                                 )}
                             </div>
@@ -1836,8 +1651,7 @@ export default function Reconciliation() {
                                     </h3>
 
                                     <p className="mt-1 text-sm text-gray-500">
-                                        Record your review separately from
-                                        the financial transaction.
+                                        Record your review separately from the financial transaction.
                                     </p>
                                 </div>
 
@@ -1846,17 +1660,12 @@ export default function Reconciliation() {
 
                                     <select
                                         value={reviewStatus}
-                                        onChange={(event) =>
-                                            setReviewStatus(event.target.value)
-                                        }
+                                        onChange={(event) => setReviewStatus(event.target.value)}
                                         disabled={savingReview}
                                         className="mt-2 block w-full rounded-xl border border-gray-300 px-3 py-3 outline-none focus:border-[#0797a6] disabled:bg-gray-100"
                                     >
                                         {REVIEW_STATUSES.map((status) => (
-                                            <option
-                                                key={status}
-                                                value={status}
-                                            >
+                                            <option key={status} value={status}>
                                                 {status}
                                             </option>
                                         ))}
@@ -1868,9 +1677,7 @@ export default function Reconciliation() {
 
                                     <textarea
                                         value={reviewNotes}
-                                        onChange={(event) =>
-                                            setReviewNotes(event.target.value)
-                                        }
+                                        onChange={(event) => setReviewNotes(event.target.value)}
                                         rows={4}
                                         maxLength={5000}
                                         disabled={savingReview}
@@ -1886,15 +1693,12 @@ export default function Reconciliation() {
                                 <div className="mt-4 rounded-xl bg-gray-50 p-4 text-sm text-gray-600">
                                     <p>
                                         <strong>Last reviewer:</strong>{" "}
-                                        {selectedRecord.reviewerName ||
-                                            "Not yet reviewed"}
+                                        {selectedRecord.reviewerName || "Not yet reviewed"}
                                     </p>
 
                                     <p className="mt-1">
                                         <strong>Review date:</strong>{" "}
-                                        {formatDateTime(
-                                            selectedRecord.reviewedAt
-                                        )}
+                                        {formatDateTime(selectedRecord.reviewedAt)}
                                     </p>
                                 </div>
 
@@ -1903,13 +1707,8 @@ export default function Reconciliation() {
                                         role="alert"
                                         className="mt-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800"
                                     >
-                                        <AlertCircle
-                                            size={18}
-                                            className="mt-0.5 shrink-0"
-                                        />
-                                        <p className="break-words">
-                                            {errorMessage}
-                                        </p>
+                                        <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                                        <p className="break-words">{errorMessage}</p>
                                     </div>
                                 )}
 
@@ -1929,17 +1728,12 @@ export default function Reconciliation() {
                                     className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#102d55] px-5 py-3 font-semibold text-white hover:bg-[#183d70] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {savingReview ? (
-                                        <RefreshCw
-                                            size={18}
-                                            className="animate-spin"
-                                        />
+                                        <RefreshCw size={18} className="animate-spin" />
                                     ) : (
                                         <Save size={18} />
                                     )}
 
-                                    {savingReview
-                                        ? "Saving review..."
-                                        : "Save accounting review"}
+                                    {savingReview ? "Saving review..." : "Save accounting review"}
                                 </button>
                             </div>
 
@@ -1952,31 +1746,19 @@ export default function Reconciliation() {
                                         </h3>
 
                                         <p className="mt-1 text-sm text-gray-500">
-                                            Previous review decisions and
-                                            notes for this record.
+                                            Previous review decisions and notes for this record.
                                         </p>
                                     </div>
 
                                     <button
                                         type="button"
-                                        onClick={() =>
-                                            loadReviewHistory(
-                                                selectedRecord.reviewId
-                                            )
-                                        }
-                                        disabled={
-                                            loadingHistory ||
-                                            !selectedRecord.reviewId
-                                        }
+                                        onClick={() => loadReviewHistory(selectedRecord.reviewId)}
+                                        disabled={loadingHistory || !selectedRecord.reviewId}
                                         className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         <RefreshCw
                                             size={15}
-                                            className={
-                                                loadingHistory
-                                                    ? "animate-spin"
-                                                    : ""
-                                            }
+                                            className={loadingHistory ? "animate-spin" : ""}
                                         />
                                         Refresh history
                                     </button>

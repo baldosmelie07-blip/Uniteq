@@ -1,7 +1,6 @@
-
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import axios from "axios";
+import api from "../api/api";
 import {
     User,
     LockKeyhole,
@@ -12,7 +11,6 @@ import {
     ShieldCheck,
 } from "lucide-react";
 
-const API_URL = "http://127.0.0.1:8000/api";
 const REQUEST_TIMEOUT = 15000;
 
 export default function Login() {
@@ -45,20 +43,21 @@ export default function Login() {
 
         if (!requestError.response) {
             if (requestError.code === "ECONNABORTED") {
-                return "The server took too long to respond. Please check that Laravel is running.";
+                return "The server took too long to respond. Please try again.";
             }
 
-            return "Cannot connect to Laravel. Check your backend server and API configuration.";
+            return "Cannot connect to the UniTeq server. Check your backend server and API configuration.";
         }
 
         if (status === 401) {
-            return data?.message ||
-                "The email or password is incorrect.";
+            return data?.message || "The email or password is incorrect.";
         }
 
         if (status === 403) {
-            return data?.message ||
-                "Your account is inactive or is not authorized to access UniTeq.";
+            return (
+                data?.message ||
+                "Your account is inactive or is not authorized to access UniTeq."
+            );
         }
 
         if (status === 422) {
@@ -74,16 +73,17 @@ export default function Login() {
                 }
             }
 
-            return data?.message ||
-                "Please check your login information.";
+            return data?.message || "Please check your login information.";
         }
 
         if (status >= 500) {
             return "The server encountered an error. Please try again or check the Laravel logs.";
         }
 
-        return data?.message ||
-            "Unable to complete your login request. Please try again.";
+        return (
+            data?.message ||
+            "Unable to complete your login request. Please try again."
+        );
     }
 
     function clearSavedAuthentication() {
@@ -97,7 +97,6 @@ export default function Login() {
 
     async function handleSubmit(event) {
         event.preventDefault();
-
         setError("");
 
         const email = form.email.trim();
@@ -121,16 +120,11 @@ export default function Login() {
         setLoading(true);
 
         try {
-            const response = await axios.post(
-                `${API_URL}/login`,
+            // The shared Axios client supplies the API base URL.
+            const response = await api.post(
+                "/login",
                 { email, password },
-                {
-                    headers: {
-                        Accept: "application/json",
-                        "Content-Type": "application/json",
-                    },
-                    timeout: REQUEST_TIMEOUT,
-                }
+                { timeout: REQUEST_TIMEOUT }
             );
 
             const token = response.data?.token;
@@ -164,35 +158,30 @@ export default function Login() {
                 return;
             }
 
-            if (
-                normalizedStatus !== "active"
-            ) {
+            if (normalizedStatus !== "active") {
                 setError(
                     "Your account is inactive. Please contact the System Administrator."
                 );
                 return;
             }
 
-            // Clear any previous login session before saving this one.
             clearSavedAuthentication();
 
-            const storage = rememberMe
-                ? localStorage
-                : sessionStorage;
+            const storage = rememberMe ? localStorage : sessionStorage;
 
             storage.setItem("uniteq_token", token);
             storage.setItem("uniteq_user", JSON.stringify(user));
 
-            // Set the default header for requests made using axios directly.
-            axios.defaults.headers.common["Accept"] = "application/json";
-            axios.defaults.headers.common["Authorization"] =
-                `Bearer ${token}`;
+            // Keep authorization available for any remaining direct Axios calls.
+            api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
 
             navigate("/dashboard", { replace: true });
         } catch (requestError) {
             console.error(
                 "UniTeq login request failed:",
-                requestError.response?.status || requestError.code || "Network error"
+                requestError.response?.status ||
+                    requestError.code ||
+                    "Network error"
             );
 
             setError(getLoginError(requestError));
@@ -215,7 +204,6 @@ export default function Login() {
 
     return (
         <div className="flex min-h-screen flex-col overflow-hidden bg-[#10284d]">
-
             {/* University Header */}
             <header className="relative z-10 bg-[#10284d] px-5 py-5 sm:px-8 lg:px-16">
                 <div className="mx-auto flex max-w-7xl items-center justify-center gap-4 sm:justify-start sm:gap-5">
@@ -245,7 +233,6 @@ export default function Login() {
 
             {/* Login Area */}
             <main className="relative flex flex-1 items-center justify-center overflow-hidden px-4 py-8 sm:px-8 sm:py-10">
-
                 {/* Background */}
                 <div className="absolute inset-0 bg-gradient-to-b from-[#10284d] via-[#15345f] to-[#0c1f3c]" />
 
@@ -267,9 +254,7 @@ export default function Login() {
                 {/* Login Card */}
                 <div className="relative z-10 w-full max-w-[500px]">
                     <div className="overflow-hidden rounded-3xl border border-white/20 bg-[#f8fbfd] shadow-[0_25px_70px_rgba(0,0,0,0.35)]">
-
                         <div className="px-6 pb-8 pt-8 sm:px-10 sm:pb-10 sm:pt-9">
-
                             {/* University Logo */}
                             <div className="flex justify-center">
                                 <div className="flex h-28 w-28 items-center justify-center sm:h-36 sm:w-36">
@@ -374,11 +359,7 @@ export default function Login() {
 
                                         <input
                                             id="login-password"
-                                            type={
-                                                showPassword
-                                                    ? "text"
-                                                    : "password"
-                                            }
+                                            type={showPassword ? "text" : "password"}
                                             name="password"
                                             value={form.password}
                                             onChange={handleChange}

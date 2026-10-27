@@ -1,6 +1,5 @@
-
 import { useCallback, useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import api from "../api/api";
 import {
     Activity,
     Search,
@@ -21,27 +20,11 @@ import {
     ArrowRight,
     History,
     AlertCircle,
-    CheckCircle2,
     Filter,
     ClipboardList,
 } from "lucide-react";
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
 const PAGE_SIZE = 10;
-
-function getHeaders() {
-    const token =
-        localStorage.getItem("uniteq_token") ||
-        sessionStorage.getItem("uniteq_token") ||
-        localStorage.getItem("token") ||
-        sessionStorage.getItem("token");
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-}
 
 function getProperties(log) {
     let value = log?.properties;
@@ -187,11 +170,15 @@ function StatCard({ label, value, icon: Icon, color, description }) {
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-500">{label}</p>
+                    <p className="text-sm font-medium text-slate-500">
+                        {label}
+                    </p>
                     <p className="mt-2 break-words text-3xl font-bold tracking-tight text-[#102d55]">
                         {value ?? 0}
                     </p>
-                    <p className="mt-1 text-xs text-slate-500">{description}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                        {description}
+                    </p>
                 </div>
 
                 <div
@@ -413,7 +400,7 @@ function getRecords(data) {
 
 function errorMessage(error) {
     if (!error.response) {
-        return "Cannot connect to the Laravel server. Check that the backend is running.";
+        return "Cannot connect to the Laravel server. Check that the backend is running and that the API URL is configured correctly.";
     }
 
     if (error.response.status === 401) {
@@ -450,14 +437,13 @@ export default function AuditTrail() {
     const [total, setTotal] = useState(0);
     const [activeLog, setActiveLog] = useState(null);
 
-    const loadLogs = useCallback(async (requestedPage = 1, selectedFilters = filters) => {
-        setLoading(true);
-        setError("");
+    const loadLogs = useCallback(
+        async (requestedPage = 1, selectedFilters = filters) => {
+            setLoading(true);
+            setError("");
 
-        try {
-            const response = await axios.get(`${API_BASE_URL}/activity-logs`, {
-                headers: getHeaders(),
-                params: {
+            try {
+                const params = {
                     page: requestedPage,
                     per_page: PAGE_SIZE,
                     ...Object.fromEntries(
@@ -465,58 +451,60 @@ export default function AuditTrail() {
                             ([, value]) => value !== ""
                         )
                     ),
-                },
-            });
+                };
 
-            const data = response.data || {};
-            const records = getRecords(data);
+                // The shared Axios client handles the base URL and auth token.
+                const response = await api.get("/activity-logs", { params });
 
-            setLogs(records);
-            setTotal(
-                data.total ??
-                    data.logs?.total ??
-                    data.activity_logs?.total ??
-                    data.pagination?.total ??
-                    records.length
-            );
-            setLastPage(
-                Math.max(
-                    1,
-                    Number(
-                        data.last_page ??
-                            data.logs?.last_page ??
-                            data.activity_logs?.last_page ??
-                            data.pagination?.last_page ??
-                            1
+                const data = response.data || {};
+                const records = getRecords(data);
+
+                setLogs(records);
+                setTotal(
+                    data.total ??
+                        data.logs?.total ??
+                        data.activity_logs?.total ??
+                        data.pagination?.total ??
+                        records.length
+                );
+                setLastPage(
+                    Math.max(
+                        1,
+                        Number(
+                            data.last_page ??
+                                data.logs?.last_page ??
+                                data.activity_logs?.last_page ??
+                                data.pagination?.last_page ??
+                                1
+                        )
                     )
-                )
-            );
-            setPage(
-                Number(
-                    data.current_page ??
-                        data.logs?.current_page ??
-                        data.activity_logs?.current_page ??
-                        data.pagination?.current_page ??
-                        requestedPage
-                )
-            );
-            setStats(data.stats || {});
-        } catch (requestError) {
-            console.error("Failed to load audit trail:", requestError);
-            setLogs([]);
-            setTotal(0);
-            setLastPage(1);
-            setError(errorMessage(requestError));
-        } finally {
-            setLoading(false);
-        }
-    }, [filters]);
+                );
+                setPage(
+                    Number(
+                        data.current_page ??
+                            data.logs?.current_page ??
+                            data.activity_logs?.current_page ??
+                            data.pagination?.current_page ??
+                            requestedPage
+                    )
+                );
+                setStats(data.stats || {});
+            } catch (requestError) {
+                console.error("Failed to load audit trail:", requestError);
+                setLogs([]);
+                setTotal(0);
+                setLastPage(1);
+                setError(errorMessage(requestError));
+            } finally {
+                setLoading(false);
+            }
+        },
+        [filters]
+    );
 
     useEffect(() => {
         loadLogs(1, filters);
-        // Initial request; loadLogs intentionally reads the current filter state.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [loadLogs, filters]);
 
     const applyFilters = (event) => {
         event.preventDefault();
@@ -526,9 +514,8 @@ export default function AuditTrail() {
             search: searchInput.trim(),
         };
 
-        setFilters(nextFilters);
         setPage(1);
-        loadLogs(1, nextFilters);
+        setFilters(nextFilters);
     };
 
     const clearFilters = () => {
@@ -541,9 +528,8 @@ export default function AuditTrail() {
         };
 
         setSearchInput("");
-        setFilters(emptyFilters);
         setPage(1);
-        loadLogs(1, emptyFilters);
+        setFilters(emptyFilters);
     };
 
     const goToPage = (nextPage) => {
@@ -683,11 +669,17 @@ export default function AuditTrail() {
 
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                         <div className="xl:col-span-2">
-                            <label htmlFor="audit-search" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                            <label
+                                htmlFor="audit-search"
+                                className="mb-1.5 block text-xs font-semibold text-slate-600"
+                            >
                                 Search
                             </label>
                             <div className="relative">
-                                <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <Search
+                                    size={17}
+                                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                                />
                                 <input
                                     id="audit-search"
                                     value={searchInput}
@@ -699,7 +691,10 @@ export default function AuditTrail() {
                         </div>
 
                         <div>
-                            <label htmlFor="audit-module" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                            <label
+                                htmlFor="audit-module"
+                                className="mb-1.5 block text-xs font-semibold text-slate-600"
+                            >
                                 Module
                             </label>
                             <select
@@ -722,7 +717,10 @@ export default function AuditTrail() {
                         </div>
 
                         <div>
-                            <label htmlFor="audit-action" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                            <label
+                                htmlFor="audit-action"
+                                className="mb-1.5 block text-xs font-semibold text-slate-600"
+                            >
                                 Action
                             </label>
                             <select
@@ -742,7 +740,10 @@ export default function AuditTrail() {
                         </div>
 
                         <div>
-                            <label htmlFor="audit-date-from" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                            <label
+                                htmlFor="audit-date-from"
+                                className="mb-1.5 block text-xs font-semibold text-slate-600"
+                            >
                                 From Date
                             </label>
                             <input
@@ -756,7 +757,10 @@ export default function AuditTrail() {
                         </div>
 
                         <div>
-                            <label htmlFor="audit-date-to" className="mb-1.5 block text-xs font-semibold text-slate-600">
+                            <label
+                                htmlFor="audit-date-to"
+                                className="mb-1.5 block text-xs font-semibold text-slate-600"
+                            >
                                 To Date
                             </label>
                             <input
@@ -773,7 +777,14 @@ export default function AuditTrail() {
                     <div className="mt-4 flex flex-wrap gap-2">
                         <button
                             type="submit"
-                            disabled={loading || Boolean(filters.date_from && filters.date_to && filters.date_from > filters.date_to)}
+                            disabled={
+                                loading ||
+                                Boolean(
+                                    filters.date_from &&
+                                    filters.date_to &&
+                                    filters.date_from > filters.date_to
+                                )
+                            }
                             className="rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
                         >
                             Apply Filters
@@ -789,7 +800,10 @@ export default function AuditTrail() {
                 </form>
 
                 {error && (
-                    <div role="alert" className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                    <div
+                        role="alert"
+                        className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+                    >
                         <AlertCircle size={19} className="mt-0.5 shrink-0" />
                         <div className="flex-1">
                             <p className="font-bold">Unable to load audit trail</p>
@@ -830,7 +844,9 @@ export default function AuditTrail() {
                     ) : logs.length === 0 ? (
                         <div className="px-5 py-16 text-center">
                             <History size={34} className="mx-auto mb-3 text-slate-300" />
-                            <h3 className="font-semibold text-slate-800">No audit records found</h3>
+                            <h3 className="font-semibold text-slate-800">
+                                No audit records found
+                            </h3>
                             <p className="mx-auto mt-1 max-w-md text-sm text-slate-500">
                                 Try adjusting your search filters, or refresh after a transaction has been recorded.
                             </p>
@@ -840,7 +856,7 @@ export default function AuditTrail() {
                             <table className="w-full min-w-[1100px] text-left text-sm">
                                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                                     <tr>
-                                        <th className="px-5 py-4 font-semibold">Date & Time</th>
+                                        <th className="px-5 py-4 font-semibold">Date &amp; Time</th>
                                         <th className="px-5 py-4 font-semibold">User</th>
                                         <th className="px-5 py-4 font-semibold">Module</th>
                                         <th className="px-5 py-4 font-semibold">Action</th>
@@ -851,7 +867,10 @@ export default function AuditTrail() {
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                     {logs.map((log, index) => (
-                                        <tr key={log.id ?? `${log.created_at}-${index}`} className="transition hover:bg-teal-50/40">
+                                        <tr
+                                            key={log.id ?? `${log.created_at}-${index}`}
+                                            className="transition hover:bg-teal-50/40"
+                                        >
                                             <td className="whitespace-nowrap px-5 py-4 text-slate-600">
                                                 {formatDate(log.created_at)}
                                             </td>
@@ -861,8 +880,12 @@ export default function AuditTrail() {
                                                         {(log.user_name || "S").trim().charAt(0).toUpperCase()}
                                                     </div>
                                                     <div>
-                                                        <p className="font-semibold text-slate-800">{log.user_name || "System"}</p>
-                                                        <p className="mt-0.5 text-xs text-slate-500">{log.user_role || "—"}</p>
+                                                        <p className="font-semibold text-slate-800">
+                                                            {log.user_name || "System"}
+                                                        </p>
+                                                        <p className="mt-0.5 text-xs text-slate-500">
+                                                            {log.user_role || "—"}
+                                                        </p>
                                                     </div>
                                                 </div>
                                             </td>
@@ -947,7 +970,9 @@ export default function AuditTrail() {
                 <div
                     className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 sm:p-6"
                     onMouseDown={(event) => {
-                        if (event.target === event.currentTarget) setActiveLog(null);
+                        if (event.target === event.currentTarget) {
+                            setActiveLog(null);
+                        }
                     }}
                 >
                     <div
@@ -962,7 +987,10 @@ export default function AuditTrail() {
                                     <ShieldCheck size={16} />
                                     Audit Record Inspector
                                 </div>
-                                <h2 id="audit-modal-title" className="text-xl font-bold text-[#102d55]">
+                                <h2
+                                    id="audit-modal-title"
+                                    className="text-xl font-bold text-[#102d55]"
+                                >
                                     Transaction History
                                 </h2>
                                 <p className="mt-1 text-sm text-slate-500">
@@ -1024,14 +1052,20 @@ export default function AuditTrail() {
                                     />
                                     <Detail
                                         label="Transaction"
-                                        value={activeLog.reference_no || activeLog.reference_id || "Not specified"}
+                                        value={
+                                            activeLog.reference_no ||
+                                            activeLog.reference_id ||
+                                            "Not specified"
+                                        }
                                     />
                                 </section>
                             </div>
 
                             <section>
                                 <div className="mb-3">
-                                    <h3 className="text-lg font-bold text-slate-900">Changes Made</h3>
+                                    <h3 className="text-lg font-bold text-slate-900">
+                                        Changes Made
+                                    </h3>
                                     <p className="mt-1 text-sm text-slate-500">
                                         Previous values are compared with the new values saved in the audit record.
                                     </p>
@@ -1047,12 +1081,17 @@ export default function AuditTrail() {
                                         </div>
                                         <div className="divide-y divide-slate-100">
                                             {changes.map((change) => (
-                                                <div key={change.field} className="grid grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-[1fr_1fr_36px_1fr] sm:items-center">
+                                                <div
+                                                    key={change.field}
+                                                    className="grid grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-[1fr_1fr_36px_1fr] sm:items-center"
+                                                >
                                                     <p className="font-semibold text-slate-800">
                                                         {fieldLabel(change.field)}
                                                     </p>
                                                     <div className="rounded-lg bg-red-50 p-3">
-                                                        <p className="mb-1 text-xs font-semibold text-red-700 sm:hidden">Previous</p>
+                                                        <p className="mb-1 text-xs font-semibold text-red-700 sm:hidden">
+                                                            Previous
+                                                        </p>
                                                         <p className="break-words whitespace-pre-wrap text-sm text-red-900">
                                                             {displayValue(change.before)}
                                                         </p>
@@ -1061,7 +1100,9 @@ export default function AuditTrail() {
                                                         <ArrowRight size={18} />
                                                     </div>
                                                     <div className="rounded-lg bg-emerald-50 p-3">
-                                                        <p className="mb-1 text-xs font-semibold text-emerald-700 sm:hidden">New Value</p>
+                                                        <p className="mb-1 text-xs font-semibold text-emerald-700 sm:hidden">
+                                                            New Value
+                                                        </p>
                                                         <p className="break-words whitespace-pre-wrap text-sm text-emerald-900">
                                                             {displayValue(change.after)}
                                                         </p>
@@ -1086,7 +1127,11 @@ export default function AuditTrail() {
 
                             <div className="space-y-3">
                                 <RecordSection
-                                    title={properties.deleted_record ? "Deleted Record Details" : "Original Record Details"}
+                                    title={
+                                        properties.deleted_record
+                                            ? "Deleted Record Details"
+                                            : "Original Record Details"
+                                    }
                                     data={beforeRecord}
                                 />
                                 <RecordSection

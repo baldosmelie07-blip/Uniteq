@@ -18,37 +18,8 @@ import {
     ArrowRight,
     RotateCcw,
 } from "lucide-react";
-import axios from "axios";
 import { useNavigate } from "react-router-dom";
-
-const API_URL = "http://127.0.0.1:8000/api/receipts";
-
-/* =========================================================
-   AUTHENTICATION
-========================================================= */
-
-function getToken() {
-    return (
-        localStorage.getItem("uniteq_token") ||
-        sessionStorage.getItem("uniteq_token") ||
-        localStorage.getItem("token") ||
-        sessionStorage.getItem("token")
-    );
-}
-
-function getHeaders() {
-    const token = getToken();
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token
-            ? {
-                  Authorization: `Bearer ${token}`,
-              }
-            : {}),
-    };
-}
+import api from "../api/api";
 
 /* =========================================================
    RESPONSE NORMALIZATION
@@ -304,7 +275,7 @@ function SummaryCard({
 }
 
 /* =========================================================
-   ALERT
+   ERROR NOTICE
 ========================================================= */
 
 function ErrorNotice({ message, onRetry, loading }) {
@@ -351,7 +322,7 @@ function ErrorNotice({ message, onRetry, loading }) {
 }
 
 /* =========================================================
-   COMPONENT
+   MAIN COMPONENT
 ========================================================= */
 
 export default function PendingBalances() {
@@ -364,7 +335,7 @@ export default function PendingBalances() {
     const [selectedRecord, setSelectedRecord] = useState(null);
 
     /* =====================================================
-       LOAD RECEIPTS
+       LOAD RECEIPTS USING THE SHARED API CLIENT
     ===================================================== */
 
     const loadPendingBalances = useCallback(async () => {
@@ -372,19 +343,18 @@ export default function PendingBalances() {
         setError("");
 
         try {
-            const response = await axios.get(API_URL, {
-                headers: getHeaders(),
+            // The shared client supplies the configured base URL
+            // and attaches the authentication token when available.
+            const response = await api.get("/receipts", {
                 timeout: 15000,
             });
 
             const allRecords = extractRecords(response.data);
 
             /*
-             * IMPORTANT:
              * This page calculates balances from receipt data.
-             * If your backend stores multiple payments per
-             * receipt, the backend should return the correct
-             * cumulative amount_paid and remaining_balance.
+             * For multiple payments per receipt, the backend should
+             * return cumulative amount_paid and remaining_balance.
              */
 
             const pendingRecords = allRecords.filter((record) => {
@@ -396,11 +366,12 @@ export default function PendingBalances() {
                     .trim()
                     .toLowerCase();
 
-                const isCancelled =
-                    explicitStatus === "cancelled" ||
-                    explicitStatus === "canceled" ||
-                    explicitStatus === "void" ||
-                    explicitStatus === "voided";
+                const isCancelled = [
+                    "cancelled",
+                    "canceled",
+                    "void",
+                    "voided",
+                ].includes(explicitStatus);
 
                 return balance > 0 && !isCancelled;
             });
@@ -420,18 +391,21 @@ export default function PendingBalances() {
                 setError(
                     "Your account is not authorized to view pending balances."
                 );
-            } else if (err.code === "ECONNABORTED") {
+            } else if (
+                err.code === "ECONNABORTED" ||
+                err.code === "ETIMEDOUT"
+            ) {
                 setError(
-                    "The server took too long to respond. Check that Laravel is running and try again."
+                    "The server took too long to respond. Please try again."
                 );
             } else if (!err.response) {
                 setError(
-                    "Cannot connect to Laravel. Make sure the backend is running and the API address is correct."
+                    "Cannot connect to the backend. Check the API address and make sure the backend service is running."
                 );
             } else {
                 setError(
                     err.response?.data?.message ||
-                        "An unexpected error occurred while loading the records."
+                    "An unexpected error occurred while loading the records."
                 );
             }
         } finally {
@@ -479,45 +453,42 @@ export default function PendingBalances() {
        SUMMARY
     ===================================================== */
 
-    const summary = useMemo(() => {
-        return records.reduce(
-            (result, record) => {
-                result.totalBalance += getBalance(record);
-                result.totalPaid += getAmountPaid(record);
-                result.totalFees += getAmountDue(record);
+    const summary = useMemo(
+        () =>
+            records.reduce(
+                (result, record) => {
+                    result.totalBalance += getBalance(record);
+                    result.totalPaid += getAmountPaid(record);
+                    result.totalFees += getAmountDue(record);
 
-                if (getPaymentStatus(record) === "Unpaid") {
-                    result.unpaidCount += 1;
+                    const status = getPaymentStatus(record);
+
+                    if (status === "Unpaid") {
+                        result.unpaidCount += 1;
+                    }
+
+                    if (status === "Partially Paid") {
+                        result.partiallyPaidCount += 1;
+                    }
+
+                    return result;
+                },
+                {
+                    totalBalance: 0,
+                    totalPaid: 0,
+                    totalFees: 0,
+                    unpaidCount: 0,
+                    partiallyPaidCount: 0,
                 }
-
-                if (
-                    getPaymentStatus(record) === "Partially Paid"
-                ) {
-                    result.partiallyPaidCount += 1;
-                }
-
-                return result;
-            },
-            {
-                totalBalance: 0,
-                totalPaid: 0,
-                totalFees: 0,
-                unpaidCount: 0,
-                partiallyPaidCount: 0,
-            }
-        );
-    }, [records]);
+            ),
+        [records]
+    );
 
     /* =====================================================
        ACTIONS
     ===================================================== */
 
     function handleProcessPayment(record) {
-        /*
-         * This preserves the selected record for the
-         * Collections page. The Collections page must read
-         * this key and prefill its payment form.
-         */
         try {
             localStorage.setItem(
                 "uniteq_payment_record",
@@ -525,9 +496,11 @@ export default function PendingBalances() {
             );
         } catch (err) {
             console.error("Unable to save selected record:", err);
+
             setError(
                 "Unable to prepare this record for payment. Please try again."
             );
+
             return;
         }
 
@@ -536,21 +509,14 @@ export default function PendingBalances() {
     }
 
     function handleSendReminder(record) {
-        /*
-         * Placeholder only. This does not send an email,
-         * SMS, or notification.
-         */
+        // Placeholder only: no message is sent.
         window.alert(
             `Reminder preparation\n\nPayer: ${getPayer(record)}\nReceipt: ${getReceiptNumber(record)}\nOutstanding balance: ${formatCurrency(getBalance(record))}\n\nNo reminder has been sent.`
         );
     }
 
     function handleApplyPenalty(record) {
-        /*
-         * Placeholder only. Never add a penalty without
-         * an approved institutional policy and backend
-         * calculation/authorization.
-         */
+        // Placeholder only: no penalty is applied.
         window.alert(
             `Penalty review\n\nPayer: ${getPayer(record)}\nCurrent balance: ${formatCurrency(getBalance(record))}\n\nNo penalty has been added. Review the applicable university policy before making any adjustment.`
         );
@@ -885,15 +851,11 @@ export default function PendingBalances() {
 
                                                         <div className="min-w-0">
                                                             <p className="font-semibold text-gray-900">
-                                                                {getPayer(
-                                                                    record
-                                                                )}
+                                                                {getPayer(record)}
                                                             </p>
 
                                                             <p className="mt-1 text-xs text-gray-500">
-                                                                {getReceiptNumber(
-                                                                    record
-                                                                )}
+                                                                {getReceiptNumber(record)}
                                                             </p>
                                                         </div>
                                                     </div>
@@ -941,9 +903,7 @@ export default function PendingBalances() {
                                                     <span
                                                         className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset ${getStatusStyle(status)}`}
                                                     >
-                                                        <StatusIcon
-                                                            status={status}
-                                                        />
+                                                        <StatusIcon status={status} />
                                                         {status}
                                                     </span>
                                                 </td>
@@ -955,6 +915,7 @@ export default function PendingBalances() {
                                                             size={15}
                                                             className="shrink-0 text-gray-400"
                                                         />
+
                                                         {formatDate(
                                                             record.date ??
                                                             record.created_at
@@ -970,9 +931,7 @@ export default function PendingBalances() {
                                                             title="View balance details"
                                                             aria-label={`View balance for ${getPayer(record)}`}
                                                             onClick={() =>
-                                                                setSelectedRecord(
-                                                                    record
-                                                                )
+                                                                setSelectedRecord(record)
                                                             }
                                                             className="rounded-lg bg-blue-50 p-2.5 text-blue-700 transition hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-400"
                                                         >
@@ -984,9 +943,7 @@ export default function PendingBalances() {
                                                             title="Prepare payment"
                                                             aria-label={`Prepare payment for ${getPayer(record)}`}
                                                             onClick={() =>
-                                                                handleProcessPayment(
-                                                                    record
-                                                                )
+                                                                handleProcessPayment(record)
                                                             }
                                                             className="rounded-lg bg-cyan-50 p-2.5 text-cyan-700 transition hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-400"
                                                         >
@@ -998,9 +955,7 @@ export default function PendingBalances() {
                                                             title="Prepare reminder"
                                                             aria-label={`Prepare reminder for ${getPayer(record)}`}
                                                             onClick={() =>
-                                                                handleSendReminder(
-                                                                    record
-                                                                )
+                                                                handleSendReminder(record)
                                                             }
                                                             className="rounded-lg bg-amber-50 p-2.5 text-amber-700 transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400"
                                                         >
@@ -1012,9 +967,7 @@ export default function PendingBalances() {
                                                             title="Review possible penalty"
                                                             aria-label={`Review possible penalty for ${getPayer(record)}`}
                                                             onClick={() =>
-                                                                handleApplyPenalty(
-                                                                    record
-                                                                )
+                                                                handleApplyPenalty(record)
                                                             }
                                                             className="rounded-lg bg-red-50 p-2.5 text-red-700 transition hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-400"
                                                         >
@@ -1050,10 +1003,7 @@ export default function PendingBalances() {
                 </section>
             </main>
 
-            {/* =====================================================
-                RECORD DETAILS MODAL
-            ===================================================== */}
-
+            {/* RECORD DETAILS MODAL */}
             {selectedRecord && (
                 <div
                     className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-5"
@@ -1116,10 +1066,9 @@ export default function PendingBalances() {
                                     className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold ring-1 ring-inset ${getStatusStyle(getPaymentStatus(selectedRecord))}`}
                                 >
                                     <StatusIcon
-                                        status={getPaymentStatus(
-                                            selectedRecord
-                                        )}
+                                        status={getPaymentStatus(selectedRecord)}
                                     />
+
                                     {getPaymentStatus(selectedRecord)}
                                 </span>
                             </div>
@@ -1153,9 +1102,7 @@ export default function PendingBalances() {
 
                                     <DetailItem
                                         label="Receipt Number"
-                                        value={getReceiptNumber(
-                                            selectedRecord
-                                        )}
+                                        value={getReceiptNumber(selectedRecord)}
                                     />
 
                                     <DetailItem
@@ -1223,9 +1170,7 @@ export default function PendingBalances() {
                                     <button
                                         type="button"
                                         onClick={() =>
-                                            handleProcessPayment(
-                                                selectedRecord
-                                            )
+                                            handleProcessPayment(selectedRecord)
                                         }
                                         className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#0797a6] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#067f8b]"
                                     >
@@ -1236,9 +1181,7 @@ export default function PendingBalances() {
                                     <button
                                         type="button"
                                         onClick={() =>
-                                            handleSendReminder(
-                                                selectedRecord
-                                            )
+                                            handleSendReminder(selectedRecord)
                                         }
                                         className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100"
                                     >
@@ -1249,9 +1192,7 @@ export default function PendingBalances() {
                                     <button
                                         type="button"
                                         onClick={() =>
-                                            handleApplyPenalty(
-                                                selectedRecord
-                                            )
+                                            handleApplyPenalty(selectedRecord)
                                         }
                                         className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800 transition hover:bg-red-100"
                                     >

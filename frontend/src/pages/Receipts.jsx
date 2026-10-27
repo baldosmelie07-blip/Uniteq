@@ -17,12 +17,10 @@ import {
     FileText,
     Wallet,
 } from "lucide-react";
-import axios from "axios";
-
-const API_URL = "http://127.0.0.1:8000/api";
+import api from "../api/api";
 
 const EMPTY_FORM = {
-    date: new Date().toLocaleDateString("en-CA"),
+    date: "",
     payer_name: "",
     purpose: "",
     amount_due: "",
@@ -31,20 +29,6 @@ const EMPTY_FORM = {
     address_department: "",
     description: "",
 };
-
-function getHeaders() {
-    const token =
-        localStorage.getItem("uniteq_token") ||
-        sessionStorage.getItem("uniteq_token") ||
-        localStorage.getItem("token") ||
-        sessionStorage.getItem("token");
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-}
 
 function unwrapCollection(data) {
     if (Array.isArray(data)) return data;
@@ -97,8 +81,6 @@ function getAmountPaid(receipt) {
         receipt?.paid_amount ??
         receipt?.total_paid ??
         receipt?.payments_total ??
-        // Support the original field mapping when the API returns
-        // an explicit amount_due/original_amount field.
         ((receipt?.amount_due != null ||
             receipt?.original_amount != null ||
             receipt?.total_amount != null)
@@ -183,7 +165,10 @@ function getErrorMessage(error, fallback) {
     const validationErrors = error?.response?.data?.errors;
 
     if (validationErrors) {
-        return Object.values(validationErrors).flat().filter(Boolean).join(" ");
+        return Object.values(validationErrors)
+            .flat()
+            .filter(Boolean)
+            .join(" ");
     }
 
     return error?.response?.data?.message || fallback;
@@ -232,9 +217,7 @@ export default function Receipts() {
             setLoading(true);
             setErrorMessage("");
 
-            const response = await axios.get(`${API_URL}/receipts`, {
-                headers: getHeaders(),
-            });
+            const response = await api.get("/receipts");
 
             setReceipts(unwrapCollection(response.data));
         } catch (error) {
@@ -271,9 +254,7 @@ export default function Receipts() {
 
     useEffect(() => {
         function handleKeyDown(event) {
-            if (event.key !== "Escape") return;
-
-            if (saving) return;
+            if (event.key !== "Escape" || saving) return;
 
             if (paymentReceipt) {
                 setPaymentReceipt(null);
@@ -386,17 +367,14 @@ export default function Receipts() {
             setSaving(true);
 
             if (editingReceipt) {
-                await axios.put(
-                    `${API_URL}/receipts/${editingReceipt.id}`,
-                    payload,
-                    { headers: getHeaders() }
+                await api.put(
+                    `/receipts/${editingReceipt.id}`,
+                    payload
                 );
 
                 setSuccessMessage("Receipt updated successfully.");
             } else {
-                await axios.post(`${API_URL}/receipts`, payload, {
-                    headers: getHeaders(),
-                });
+                await api.post("/receipts", payload);
 
                 setSuccessMessage("Receipt created successfully.");
             }
@@ -464,13 +442,14 @@ export default function Receipts() {
 
         if (!confirmed) return;
 
+        const receiptBeingPaid = paymentReceipt;
+
         try {
             setSaving(true);
 
-            await axios.post(
-                `${API_URL}/receipts/${paymentReceipt.id}/payment`,
-                { amount },
-                { headers: getHeaders() }
+            await api.post(
+                `/receipts/${receiptBeingPaid.id}/payment`,
+                { amount }
             );
 
             setPaymentReceipt(null);
@@ -479,11 +458,10 @@ export default function Receipts() {
 
             await loadReceipts();
 
-            if (selectedReceipt?.id === paymentReceipt.id) {
+            if (selectedReceipt?.id === receiptBeingPaid.id) {
                 try {
-                    const updatedResponse = await axios.get(
-                        `${API_URL}/receipts/${paymentReceipt.id}`,
-                        { headers: getHeaders() }
+                    const updatedResponse = await api.get(
+                        `/receipts/${receiptBeingPaid.id}`
                     );
 
                     const updated =
@@ -493,12 +471,18 @@ export default function Receipts() {
 
                     setSelectedReceipt(updated);
                 } catch {
-                    // The list refresh still provides the updated receipt data.
-                    const updated = receipts.find(
-                        (item) => item.id === paymentReceipt.id
-                    );
+                    // The receipt list has already been refreshed.
+                    setSelectedReceipt((previous) => {
+                        if (!previous || previous.id !== receiptBeingPaid.id) {
+                            return previous;
+                        }
 
-                    if (updated) setSelectedReceipt(updated);
+                        return (
+                            receipts.find(
+                                (item) => item.id === receiptBeingPaid.id
+                            ) || previous
+                        );
+                    });
                 }
             }
         } catch (error) {
@@ -534,10 +518,9 @@ export default function Receipts() {
             setErrorMessage("");
             setSuccessMessage("");
 
-            await axios.post(
-                `${API_URL}/receipts/${receipt.id}/payment`,
-                { amount: balance },
-                { headers: getHeaders() }
+            await api.post(
+                `/receipts/${receipt.id}/payment`,
+                { amount: balance }
             );
 
             setSelectedReceipt(null);
@@ -787,10 +770,7 @@ export default function Receipts() {
                         <tbody className="divide-y divide-gray-100">
                             {loading ? (
                                 <tr>
-                                    <td
-                                        colSpan={6}
-                                        className="py-14 text-center text-gray-500"
-                                    >
+                                    <td colSpan={6} className="py-14 text-center text-gray-500">
                                         <RefreshCw
                                             size={25}
                                             className="mx-auto mb-3 animate-spin"
@@ -800,10 +780,7 @@ export default function Receipts() {
                                 </tr>
                             ) : filteredReceipts.length === 0 ? (
                                 <tr>
-                                    <td
-                                        colSpan={6}
-                                        className="py-14 text-center text-gray-500"
-                                    >
+                                    <td colSpan={6} className="py-14 text-center text-gray-500">
                                         {search
                                             ? `No receipts match "${search}".`
                                             : "No official receipts found."}
@@ -824,23 +801,15 @@ export default function Receipts() {
 
                                             <td className="px-5 py-5 text-sm text-gray-600">
                                                 <div className="flex items-center gap-2">
-                                                    <CalendarDays
-                                                        size={16}
-                                                        className="text-gray-400"
-                                                    />
-                                                    {formatDate(
-                                                        receipt.date || receipt.created_at
-                                                    )}
+                                                    <CalendarDays size={16} className="text-gray-400" />
+                                                    {formatDate(receipt.date || receipt.created_at)}
                                                 </div>
                                             </td>
 
                                             <td className="px-5 py-5">
                                                 <div className="flex items-center gap-3">
                                                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-cyan-50">
-                                                        <User
-                                                            size={17}
-                                                            className="text-cyan-600"
-                                                        />
+                                                        <User size={17} className="text-cyan-600" />
                                                     </div>
                                                     <div>
                                                         <p className="font-semibold text-gray-900">
@@ -1076,24 +1045,24 @@ export default function Receipts() {
                                     <span className="text-sm font-semibold text-gray-700">
                                         Payment Status:
                                     </span>
-                                    <span
-                                        className={`rounded-full px-3 py-1 text-xs font-bold ${getStatusStyle(
-                                            Number(form.amount_due || 0) > 0 &&
-                                                Number(form.amount_paid || 0) >=
-                                                    Number(form.amount_due)
+                                    {(() => {
+                                        const due = Number(form.amount_due || 0);
+                                        const paid = Number(form.amount_paid || 0);
+                                        const status =
+                                            due > 0 && paid >= due
                                                 ? "Paid"
-                                                : Number(form.amount_paid || 0) > 0
+                                                : paid > 0
                                                 ? "Partially Paid"
-                                                : "Unpaid"
-                                        )}`}
-                                    >
-                                        {Number(form.amount_due || 0) > 0 &&
-                                        Number(form.amount_paid || 0) >= Number(form.amount_due)
-                                            ? "Paid"
-                                            : Number(form.amount_paid || 0) > 0
-                                            ? "Partially Paid"
-                                            : "Unpaid"}
-                                    </span>
+                                                : "Unpaid";
+
+                                        return (
+                                            <span
+                                                className={`rounded-full px-3 py-1 text-xs font-bold ${getStatusStyle(status)}`}
+                                            >
+                                                {status}
+                                            </span>
+                                        );
+                                    })()}
                                 </div>
                             </div>
 
@@ -1149,9 +1118,7 @@ export default function Receipts() {
                             <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                                 <Detail
                                     label="Date"
-                                    value={formatDate(
-                                        selectedReceipt.date || selectedReceipt.created_at
-                                    )}
+                                    value={formatDate(selectedReceipt.date || selectedReceipt.created_at)}
                                 />
                                 <Detail label="Payer" value={getPayer(selectedReceipt)} />
                                 <Detail
@@ -1186,9 +1153,7 @@ export default function Receipts() {
                                     Payment Status
                                 </p>
                                 <span
-                                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold ${getStatusStyle(
-                                        getStatus(selectedReceipt)
-                                    )}`}
+                                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold ${getStatusStyle(getStatus(selectedReceipt))}`}
                                 >
                                     {getStatusIcon(getStatus(selectedReceipt))}
                                     {getStatus(selectedReceipt)}
@@ -1197,10 +1162,7 @@ export default function Receipts() {
 
                             {getRemainingBalance(selectedReceipt) > 0 && (
                                 <div className="flex items-start gap-3 rounded-xl border border-yellow-200 bg-yellow-50 p-4">
-                                    <Wallet
-                                        size={20}
-                                        className="mt-0.5 text-yellow-700"
-                                    />
+                                    <Wallet size={20} className="mt-0.5 text-yellow-700" />
                                     <div>
                                         <p className="font-bold text-yellow-800">
                                             Outstanding Balance
@@ -1208,11 +1170,8 @@ export default function Receipts() {
                                         <p className="mt-1 text-sm text-yellow-700">
                                             This receipt has a remaining balance of{" "}
                                             <strong>
-                                                {formatCurrency(
-                                                    getRemainingBalance(selectedReceipt)
-                                                )}
-                                            </strong>
-                                            .
+                                                {formatCurrency(getRemainingBalance(selectedReceipt))}
+                                            </strong>.
                                         </p>
                                     </div>
                                 </div>
@@ -1228,8 +1187,7 @@ export default function Receipts() {
                                     Description
                                 </p>
                                 <div className="rounded-xl bg-gray-50 p-4 text-gray-700">
-                                    {selectedReceipt.description ||
-                                        "No description provided."}
+                                    {selectedReceipt.description || "No description provided."}
                                 </div>
                             </div>
                         </div>
@@ -1302,8 +1260,7 @@ export default function Receipts() {
                                     Record Payment
                                 </h2>
                                 <p className="mt-1 text-sm text-gray-500">
-                                    {getReceiptNumber(paymentReceipt)} —{" "}
-                                    {getPayer(paymentReceipt)}
+                                    {getReceiptNumber(paymentReceipt)} — {getPayer(paymentReceipt)}
                                 </p>
                             </div>
 
@@ -1326,9 +1283,7 @@ export default function Receipts() {
                                 />
                                 <DetailAmount
                                     label="Remaining Balance"
-                                    value={formatCurrency(
-                                        getRemainingBalance(paymentReceipt)
-                                    )}
+                                    value={formatCurrency(getRemainingBalance(paymentReceipt))}
                                     red
                                 />
                             </div>
@@ -1340,9 +1295,7 @@ export default function Receipts() {
                                     min="0.01"
                                     max={getRemainingBalance(paymentReceipt)}
                                     value={paymentAmount}
-                                    onChange={(event) =>
-                                        setPaymentAmount(event.target.value)
-                                    }
+                                    onChange={(event) => setPaymentAmount(event.target.value)}
                                     required
                                     className={inputClass}
                                 />

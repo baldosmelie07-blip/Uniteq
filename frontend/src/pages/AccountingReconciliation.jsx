@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import api from "../api/api";
 import {
     RefreshCw,
     Wallet,
@@ -18,22 +18,6 @@ import {
     Clock,
     CircleDollarSign,
 } from "lucide-react";
-
-const API_BASE_URL = "http://127.0.0.1:8000/api";
-
-function getHeaders() {
-    const token =
-        localStorage.getItem("uniteq_token") ||
-        sessionStorage.getItem("uniteq_token") ||
-        localStorage.getItem("token") ||
-        sessionStorage.getItem("token");
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-}
 
 function getToday() {
     const date = new Date();
@@ -316,47 +300,49 @@ export default function AccountingReconciliation() {
         setReceiptError("");
         setVoucherError("");
 
-        const [receiptResult, voucherResult] = await Promise.allSettled([
-            axios.get(`${API_BASE_URL}/receipts`, {
-                headers: getHeaders(),
-            }),
-            axios.get(`${API_BASE_URL}/vouchers`, {
-                headers: getHeaders(),
-            }),
-        ]);
+        try {
+            const [receiptResult, voucherResult] = await Promise.allSettled([
+                api.get("/receipts"),
+                api.get("/vouchers"),
+            ]);
 
-        if (receiptResult.status === "fulfilled") {
-            setReceipts(unwrapRecords(receiptResult.value));
-        } else {
-            console.error("Could not load receipts:", receiptResult.reason);
-            setReceiptError(
-                receiptResult.reason?.response?.data?.message ||
-                    "Collections could not be loaded."
-            );
-            setReceipts([]);
+            if (receiptResult.status === "fulfilled") {
+                setReceipts(unwrapRecords(receiptResult.value));
+            } else {
+                console.error("Could not load receipts:", receiptResult.reason);
+                setReceiptError(
+                    receiptResult.reason?.response?.data?.message ||
+                        "Collections could not be loaded."
+                );
+                setReceipts([]);
+            }
+
+            if (voucherResult.status === "fulfilled") {
+                setVouchers(unwrapRecords(voucherResult.value));
+            } else {
+                console.error("Could not load vouchers:", voucherResult.reason);
+                setVoucherError(
+                    voucherResult.reason?.response?.data?.message ||
+                        "Disbursement vouchers could not be loaded."
+                );
+                setVouchers([]);
+            }
+
+            setLastUpdated(new Date());
+        } catch (error) {
+            console.error("Could not load reconciliation records:", error);
+            setReceiptError("Unable to load reconciliation records.");
+            setVoucherError("Unable to load reconciliation records.");
+        } finally {
+            setLoading(false);
         }
-
-        if (voucherResult.status === "fulfilled") {
-            setVouchers(unwrapRecords(voucherResult.value));
-        } else {
-            console.error("Could not load vouchers:", voucherResult.reason);
-            setVoucherError(
-                voucherResult.reason?.response?.data?.message ||
-                    "Disbursement vouchers could not be loaded."
-            );
-            setVouchers([]);
-        }
-
-        setLastUpdated(new Date());
-        setLoading(false);
     }, []);
 
     useEffect(() => {
         loadRecords();
     }, [loadRecords]);
 
-    const dateRangeValid =
-        !fromDate || !toDate || fromDate <= toDate;
+    const dateRangeValid = !fromDate || !toDate || fromDate <= toDate;
 
     const filteredReceipts = useMemo(() => {
         if (!dateRangeValid) return [];
@@ -442,7 +428,7 @@ export default function AccountingReconciliation() {
             direction: isPaid(voucher) ? "out" : "pending",
         }));
 
-        const allRows = [...collectionRows, ...voucherRows]
+        return [...collectionRows, ...voucherRows]
             .filter((row) => {
                 if (activeTab === "collections") {
                     return row.type === "Collection";
@@ -471,8 +457,6 @@ export default function AccountingReconciliation() {
                 );
             })
             .sort((a, b) => b.date.localeCompare(a.date));
-
-        return allRows;
     }, [filteredReceipts, filteredVouchers, activeTab, search]);
 
     const differenceStatus =
@@ -553,9 +537,7 @@ export default function AccountingReconciliation() {
                 <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm print:hidden">
                     <div className="mb-4 flex items-center gap-2">
                         <CalendarDays size={19} className="text-[#0797a6]" />
-                        <h2 className="font-bold text-[#102d55]">
-                            Report Filters
-                        </h2>
+                        <h2 className="font-bold text-[#102d55]">Report Filters</h2>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
@@ -636,14 +618,10 @@ export default function AccountingReconciliation() {
                                     Some reconciliation data could not be loaded.
                                 </p>
                                 {receiptError && (
-                                    <p className="mt-1">
-                                        Collections: {receiptError}
-                                    </p>
+                                    <p className="mt-1">Collections: {receiptError}</p>
                                 )}
                                 {voucherError && (
-                                    <p className="mt-1">
-                                        Vouchers: {voucherError}
-                                    </p>
+                                    <p className="mt-1">Vouchers: {voucherError}</p>
                                 )}
                                 <p className="mt-2 text-amber-800">
                                     The totals may be incomplete. Refresh or check the Laravel API
@@ -672,7 +650,6 @@ export default function AccountingReconciliation() {
                                 icon={TrendingUp}
                                 color="green"
                             />
-
                             <SummaryCard
                                 title="Paid Disbursements"
                                 value={totals.paidOut}
@@ -680,7 +657,6 @@ export default function AccountingReconciliation() {
                                 icon={TrendingDown}
                                 color="blue"
                             />
-
                             <SummaryCard
                                 title="Unsettled Vouchers"
                                 value={totals.pendingAmount}
@@ -688,7 +664,6 @@ export default function AccountingReconciliation() {
                                 icon={Wallet}
                                 color="amber"
                             />
-
                             <SummaryCard
                                 title="Collection Less Paid Out"
                                 value={totals.difference}
@@ -854,11 +829,9 @@ export default function AccountingReconciliation() {
                                                     <td className="whitespace-nowrap px-4 py-4 text-sm text-slate-600">
                                                         {formatDate(row.date)}
                                                     </td>
-
                                                     <td className="whitespace-nowrap px-4 py-4 text-sm font-bold text-[#102d55]">
                                                         {row.number}
                                                     </td>
-
                                                     <td className="px-4 py-4">
                                                         <span className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
                                                             {row.type === "Collection" ? (
@@ -875,22 +848,18 @@ export default function AccountingReconciliation() {
                                                             {row.type}
                                                         </span>
                                                     </td>
-
                                                     <td className="px-4 py-4 text-sm font-medium text-slate-800">
                                                         {row.description}
                                                     </td>
-
                                                     <td className="px-4 py-4 text-sm text-slate-600">
                                                         {row.office}
                                                     </td>
-
                                                     <td className="px-4 py-4">
                                                         <StatusBadge
                                                             status={row.status}
                                                             direction={row.direction}
                                                         />
                                                     </td>
-
                                                     <td
                                                         className={`whitespace-nowrap px-4 py-4 text-right text-sm font-bold ${
                                                             row.direction === "out"

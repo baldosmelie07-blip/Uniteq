@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
     FileText,
     Download,
+    FileSpreadsheet,
     Printer,
     Search,
     RefreshCw,
@@ -13,30 +14,17 @@ import {
     Clock,
     AlertCircle,
 } from "lucide-react";
-import axios from "axios";
+import api from "../api/api";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
 const LOGO_URL = "/university-of-abra-logo.png";
 
 function getToday() {
     return new Date().toISOString().split("T")[0];
 }
 
-function getHeaders() {
-    const token = localStorage.getItem("uniteq_token");
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token
-            ? {
-                  Authorization: `Bearer ${token}`,
-              }
-            : {}),
-    };
-}
 
 function firstValue(...values) {
     return values.find(
@@ -78,80 +66,76 @@ export default function Reports() {
     }, []);
 
     async function loadReports() {
+        setLoading(true);
+        setShowLoadingOverlay(true);
+        setVoucherLoading(true);
+
         try {
-            setLoading(true);
-            setShowLoadingOverlay(true);
+            // Use the shared API client so the configured API URL and
+            // the UniTeq authentication token are included automatically.
+            const [receiptResult, voucherResult] = await Promise.allSettled([
+                api.get("/receipts", { timeout: 15000 }),
+                api.get("/vouchers", { timeout: 15000 }),
+            ]);
 
-            const receiptRequest = axios.get(
-                `${API_BASE_URL}/receipts`,
-                {
-                    headers: getHeaders(),
-                }
-            );
+            const extractRows = (payload, key) => {
+                if (Array.isArray(payload)) return payload;
+                if (Array.isArray(payload?.data)) return payload.data;
+                if (Array.isArray(payload?.data?.data)) return payload.data.data;
+                if (Array.isArray(payload?.[key])) return payload[key];
+                return [];
+            };
 
-            setVoucherLoading(true);
-
-            const voucherRequest = axios.get(
-                `${API_BASE_URL}/vouchers`,
-                {
-                    headers: getHeaders(),
-                }
-            );
-
-            const [receiptResult, voucherResult] =
-                await Promise.allSettled([
-                    receiptRequest,
-                    voucherRequest,
-                ]);
+            const failures = [];
 
             if (receiptResult.status === "fulfilled") {
-                const response = receiptResult.value;
-
-                const data = Array.isArray(response.data)
-                    ? response.data
-                    : response.data?.data || [];
-
-                setReceipts(data);
+                setReceipts(extractRows(receiptResult.value.data, "receipts"));
             } else {
-                console.error(
-                    "Receipt loading error:",
-                    receiptResult.reason
-                );
-
                 setReceipts([]);
+                failures.push({ label: "Receipts", error: receiptResult.reason });
+                console.error("Receipt loading error:", receiptResult.reason);
             }
 
             if (voucherResult.status === "fulfilled") {
-                const response = voucherResult.value;
-
-                const data = Array.isArray(response.data)
-                    ? response.data
-                    : response.data?.data || [];
-
-                setVouchers(data);
+                setVouchers(extractRows(voucherResult.value.data, "vouchers"));
             } else {
-                console.warn(
-                    "Voucher endpoint could not be loaded. The report will continue using available collection records.",
-                    voucherResult.reason
-                );
-
                 setVouchers([]);
+                failures.push({ label: "Vouchers", error: voucherResult.reason });
+                console.error("Voucher loading error:", voucherResult.reason);
             }
 
             setLastUpdated(new Date());
-        } catch (error) {
-            console.error(
-                "Report loading error:",
-                error
-            );
 
+            if (failures.length > 0) {
+                const details = failures.map(({ label, error }) => {
+                    const status = error?.response?.status;
+                    const message =
+                        error?.response?.data?.message ||
+                        error?.message ||
+                        "Unknown API error";
+                    return `${label}${status ? ` (HTTP ${status})` : ""}: ${message}`;
+                }).join("\n");
+
+                const summary = failures.length === 2
+                    ? "Unable to load receipts and vouchers."
+                    : `${failures[0].label} could not be loaded.`;
+
+                alert(
+                    `${summary}\n\n${details}\n\n` +
+                    "Check that the Laravel backend is running, VITE_API_URL points to the API base URL, and your account is logged in with permission to view these records."
+                );
+            }
+        } catch (error) {
+            console.error("Report loading error:", error);
             alert(
-                error.response?.data?.message ||
-                    "Unable to load financial records for the report."
+                error?.response?.data?.message ||
+                error?.message ||
+                "Unable to load financial records for the report."
             );
         } finally {
             setLoading(false);
             setVoucherLoading(false);
+            setShowLoadingOverlay(false);
         }
     }
 
@@ -906,42 +890,19 @@ export default function Reports() {
                 },
             });
 
-            const finalY =
-                doc.lastAutoTable.finalY +
-                8;
+            let finalY = (doc.lastAutoTable?.finalY || 74) + 10;
+            if (finalY > 165) {
+                doc.addPage();
+                finalY = 22;
+            }
 
-            doc.setFont(
-                "helvetica",
-                "bold"
-            );
-
+            doc.setFont("helvetica", "bold");
             doc.setFontSize(10);
-
-            doc.text(
-                `TOTAL COLLECTIONS: ${formatCurrency(
-                    totalCollections
-                )}`,
-                14,
-                finalY
-            );
-
-            doc.text(
-                `VOUCHER BALANCES: ${formatCurrency(
-                    totalVoucherBalance
-                )}`,
-                148,
-                finalY,
-                { align: "center" }
-            );
-
-            doc.text(
-                `TOTAL VOUCHER VALUE: ${formatCurrency(
-                    totalVoucherValue
-                )}`,
-                283,
-                finalY,
-                { align: "right" }
-            );
+            doc.text(`TOTAL COLLECTIONS: ${formatCurrency(totalCollections)}`, 14, finalY);
+            doc.text(`TOTAL VOUCHER VALUE: ${formatCurrency(totalVoucherValue)}`, 108, finalY);
+            doc.text(`TOTAL REDEMPTION: ${formatCurrency(totalVoucherRedemption)}`, 202, finalY);
+            doc.text(`PENDING BALANCE: ${formatCurrency(totalVoucherBalance)}`, 14, finalY + 8);
+            doc.text(`TOTAL FINANCIAL ACTIVITY: ${formatCurrency(totalFinancialActivity)}`, 108, finalY + 8);
 
             doc.setFont(
                 "helvetica",
@@ -978,6 +939,83 @@ export default function Reports() {
                 "Unable to generate the PDF report."
             );
         }
+    }
+
+    // =========================================================
+    // EXCEL EXPORT (uses the currently filtered records and totals)
+    // =========================================================
+
+    function exportExcel() {
+        if (filteredReceipts.length === 0 && filteredVouchers.length === 0) {
+            alert("There are no records to export.");
+            return;
+        }
+
+        const workbook = XLSX.utils.book_new();
+        const summaryRows = [
+            ["UNIVERSITY OF ABRA"],
+            ["UniTeq Financial Management System"],
+            ["CONSOLIDATED COLLECTION & VOUCHER REPORT"],
+            ["Report Period", getPeriodText()],
+            ["Generated", new Date().toLocaleString("en-PH")],
+            [],
+            ["FINANCIAL SUMMARY", "AMOUNT (PHP)"],
+            ["Total Collection Records", collectionCount],
+            ["Total Voucher Records", voucherCount],
+            ["Total Collections", totalCollections],
+            ["Total Voucher Value", totalVoucherValue],
+            ["Total Voucher Redemption", totalVoucherRedemption],
+            ["Total Voucher Pending Balance", totalVoucherBalance],
+            ["Total Financial Activity (Collections + Voucher Redemption)", totalFinancialActivity],
+        ];
+        const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+        summarySheet["!cols"] = [{ wch: 58 }, { wch: 24 }];
+        ["B10", "B11", "B12", "B13", "B14"].forEach((cell) => {
+            if (summarySheet[cell]) summarySheet[cell].z = '"₱"#,##0.00';
+        });
+        XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+
+        const transactionRows = [
+            ["Record Type", "Date", "Payer / Beneficiary", "Student ID", "Transaction / Voucher No.", "Purpose / Type", "Assigned / Collection Amount (PHP)", "Redeemed Amount (PHP)", "Pending Balance (PHP)"],
+            ...filteredReceipts.map((receipt) => [
+                "Collection",
+                getDateOnly(getReceiptDate(receipt)),
+                getReceiptPayer(receipt),
+                getReceiptStudentId(receipt),
+                getReceiptNumber(receipt),
+                getReceiptPurpose(receipt),
+                getReceiptAmount(receipt),
+                0,
+                0,
+            ]),
+            ...filteredVouchers.map((voucher) => [
+                "Voucher",
+                getDateOnly(getVoucherDate(voucher)),
+                getVoucherPayer(voucher),
+                getVoucherStudentId(voucher),
+                getVoucherNumber(voucher),
+                getVoucherType(voucher),
+                getVoucherAssignedValue(voucher),
+                getVoucherRedeemedValue(voucher),
+                getVoucherBalance(voucher),
+            ]),
+            [],
+            ["TOTALS", "", "", "", "", "", totalCollections + totalVoucherValue, totalVoucherRedemption, totalVoucherBalance],
+        ];
+        const transactionsSheet = XLSX.utils.aoa_to_sheet(transactionRows);
+        transactionsSheet["!cols"] = [
+            { wch: 16 }, { wch: 14 }, { wch: 28 }, { wch: 18 },
+            { wch: 25 }, { wch: 24 }, { wch: 28 }, { wch: 22 }, { wch: 22 },
+        ];
+        const lastRow = transactionRows.length;
+        for (let row = 2; row <= lastRow; row += 1) {
+            ["G", "H", "I"].forEach((col) => {
+                const cell = transactionsSheet[`${col}${row}`];
+                if (cell && typeof cell.v === "number") cell.z = '"₱"#,##0.00';
+            });
+        }
+        XLSX.utils.book_append_sheet(workbook, transactionsSheet, "Transactions");
+        XLSX.writeFile(workbook, `UniTeq-Financial-Report-${getToday()}.xlsx`);
     }
 
     // =========================================================
@@ -1208,14 +1246,16 @@ export default function Reports() {
                     </div>
 
                     <div class="summary-card">
-                        <div class="summary-label">
-                            Voucher Pending Balance
-                        </div>
-                        <div class="summary-value">
-                            ${formatCurrency(
-                                totalVoucherBalance
-                            )}
-                        </div>
+                        <div class="summary-label">Total Voucher Redemption</div>
+                        <div class="summary-value">${formatCurrency(totalVoucherRedemption)}</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="summary-label">Voucher Pending Balance</div>
+                        <div class="summary-value">${formatCurrency(totalVoucherBalance)}</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="summary-label">Total Financial Activity</div>
+                        <div class="summary-value">${formatCurrency(totalFinancialActivity)}</div>
                     </div>
                 </div>
 
@@ -1456,6 +1496,16 @@ export default function Reports() {
 
                                 Print Report
 
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={exportExcel}
+                                disabled={loading}
+                                className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition font-semibold disabled:opacity-50"
+                            >
+                                <FileSpreadsheet size={18} />
+                                Export Excel
                             </button>
 
                             <button
@@ -2108,6 +2158,16 @@ export default function Reports() {
                                 >
                                     <Printer size={17} />
                                     Print Report
+                                </button>
+
+                                <button
+                                    type="button"
+                                    onClick={exportExcel}
+                                    disabled={loading}
+                                    className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                                >
+                                    <FileSpreadsheet size={17} />
+                                    Export to Excel
                                 </button>
 
                                 <button

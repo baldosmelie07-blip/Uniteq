@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
     Plus,
@@ -17,30 +17,13 @@ import {
     CreditCard,
     Printer,
 } from "lucide-react";
-import axios from "axios";
+import api from "../api/api";
 
-const API_URL = "http://127.0.0.1:8000/api/vouchers";
+const API_URL = "/vouchers";
 
 function getToday() {
     const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-}
-
-function getHeaders() {
-    const token =
-        localStorage.getItem("uniteq_token") ||
-        sessionStorage.getItem("uniteq_token") ||
-        localStorage.getItem("token") ||
-        sessionStorage.getItem("token");
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 const initialForm = {
@@ -59,60 +42,97 @@ const initialForm = {
     status: "Pending",
 };
 
+function normalizeVoucher(voucher) {
+    return {
+        ...voucher,
+        voucher_number: voucher?.voucher_number ?? voucher?.voucherNumber ?? "",
+        amount_words: voucher?.amount_words ?? voucher?.amountWords ?? "",
+        prepared_by: voucher?.prepared_by ?? voucher?.preparedBy ?? "",
+        checked_by: voucher?.checked_by ?? voucher?.checkedBy ?? "",
+        approved_by: voucher?.approved_by ?? voucher?.approvedBy ?? "",
+        received_by: voucher?.received_by ?? voucher?.receivedBy ?? "",
+    };
+}
+
+function extractVoucherList(data) {
+    if (Array.isArray(data)) return data.map(normalizeVoucher);
+    if (Array.isArray(data?.data)) return data.data.map(normalizeVoucher);
+    if (Array.isArray(data?.vouchers)) return data.vouchers.map(normalizeVoucher);
+    if (Array.isArray(data?.data?.data)) return data.data.data.map(normalizeVoucher);
+    return [];
+}
+
+function getErrorMessage(error, fallback) {
+    if (!error.response) {
+        return "Cannot connect to the UniTeq server. Check that Laravel is running and the API URL is correct.";
+    }
+
+    const status = error.response.status;
+    const data = error.response.data;
+
+    if (status === 401) return "Your session has expired. Please log in again.";
+    if (status === 403) return "You are not authorized to perform this action.";
+    if (status === 404) {
+        return "The voucher API endpoint was not found. Check the Laravel API routes.";
+    }
+    if (status === 422) {
+        return data?.errors
+            ? Object.values(data.errors).flat().join("\n")
+            : data?.message || "Please check the information you entered.";
+    }
+    if (status >= 500) {
+        return data?.message ||
+            "The UniTeq server encountered an error. Check the Laravel logs.";
+    }
+
+    return data?.message || fallback;
+}
+
 export default function Vouchers() {
     const location = useLocation();
-
     const globalSearch =
         new URLSearchParams(location.search).get("search")?.trim() || "";
 
     const [vouchers, setVouchers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [loadError, setLoadError] = useState("");
     const [showAddModal, setShowAddModal] = useState(false);
     const [selectedVoucher, setSelectedVoucher] = useState(null);
     const [editingVoucher, setEditingVoucher] = useState(null);
-    const [form, setForm] = useState(initialForm);
+    const [form, setForm] = useState({ ...initialForm });
+    const [refreshKey, setRefreshKey] = useState(0);
 
-    useEffect(() => {
-        loadVouchers();
-    }, []);
-
-    async function loadVouchers() {
+    const loadVouchers = useCallback(async () => {
         try {
             setLoading(true);
+            setLoadError("");
 
-            const response = await axios.get(API_URL, {
-                headers: getHeaders(),
-            });
-
-            const data = Array.isArray(response.data)
-                ? response.data
-                : response.data?.data || [];
-
-            setVouchers(data);
+            const response = await api.get(API_URL);
+            setVouchers(extractVoucherList(response.data));
         } catch (error) {
             console.error("Voucher loading error:", error);
-            setVouchers([]);
+            console.error("Backend response:", error.response?.data);
 
-            if (error.response?.status === 401) {
-                alert("Your session has expired. Please log in again.");
-            } else {
-                alert(
-                    error.response?.data?.message ||
-                    "Unable to load voucher records."
-                );
-            }
+            setVouchers([]);
+            setLoadError(
+                getErrorMessage(error, "Unable to load voucher records.")
+            );
         } finally {
             setLoading(false);
         }
-    }
+    }, []);
+
+    useEffect(() => {
+        loadVouchers();
+    }, [loadVouchers, refreshKey]);
 
     function voucherNumber(voucher) {
-        return voucher.voucher_number || voucher.voucherNumber || "—";
+        return voucher?.voucher_number || voucher?.voucherNumber || "—";
     }
 
     function voucherDate(voucher) {
-        return voucher.date || voucher.created_at || "";
+        return voucher?.date || voucher?.created_at || "";
     }
 
     function money(value) {
@@ -126,7 +146,6 @@ export default function Vouchers() {
         if (!value) return "—";
 
         const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
-
         if (Number.isNaN(date.getTime())) return "—";
 
         return date.toLocaleDateString("en-PH", {
@@ -158,24 +177,21 @@ export default function Vouchers() {
                 return <CheckCircle size={14} />;
             case "rejected":
                 return <AlertCircle size={14} />;
-            case "under review":
-                return <Clock size={14} />;
             default:
                 return <Clock size={14} />;
         }
     }
 
-    const sortedVouchers = useMemo(() => {
-        return [...vouchers].sort((a, b) => {
-            const dateA = String(voucherDate(a));
-            const dateB = String(voucherDate(b));
-            return dateB.localeCompare(dateA);
-        });
-    }, [vouchers]);
+    const sortedVouchers = useMemo(
+        () =>
+            [...vouchers].sort((a, b) =>
+                String(voucherDate(b)).localeCompare(String(voucherDate(a)))
+            ),
+        [vouchers]
+    );
 
     const filteredVouchers = useMemo(() => {
         const query = globalSearch.toLowerCase();
-
         if (!query) return sortedVouchers;
 
         return sortedVouchers.filter((voucher) => {
@@ -187,19 +203,14 @@ export default function Vouchers() {
                 voucher.purpose,
                 voucher.amount,
                 voucher.amount_words,
-                voucher.amountWords,
                 voucher.prepared_by,
-                voucher.preparedBy,
                 voucher.checked_by,
-                voucher.checkedBy,
                 voucher.approved_by,
-                voucher.approvedBy,
                 voucher.received_by,
-                voucher.receivedBy,
                 voucher.status,
                 voucherDate(voucher),
             ]
-                .filter(Boolean)
+                .filter((value) => value !== null && value !== undefined)
                 .join(" ")
                 .toLowerCase();
 
@@ -212,12 +223,19 @@ export default function Vouchers() {
         setEditingVoucher(null);
     }
 
+    function closeFormModal() {
+        setShowAddModal(false);
+        resetForm();
+    }
+
     function openAddModal() {
         resetForm();
         setShowAddModal(true);
     }
 
-    function openEditModal(voucher) {
+    function openEditModal(rawVoucher) {
+        const voucher = normalizeVoucher(rawVoucher);
+
         setEditingVoucher(voucher);
         setForm({
             voucherNumber: voucher.voucher_number || "",
@@ -234,6 +252,7 @@ export default function Vouchers() {
             receivedBy: voucher.received_by || "",
             status: voucher.status || "Pending",
         });
+
         setSelectedVoucher(null);
         setShowAddModal(true);
     }
@@ -295,51 +314,32 @@ export default function Vouchers() {
             setSaving(true);
 
             if (editingVoucher) {
-                await axios.put(
-                    `${API_URL}/${editingVoucher.id}`,
-                    payload,
-                    { headers: getHeaders() }
-                );
+                await api.put(`${API_URL}/${editingVoucher.id}`, payload);
                 alert("Disbursement voucher updated successfully.");
             } else {
-                await axios.post(API_URL, payload, {
-                    headers: getHeaders(),
-                });
+                await api.post(API_URL, payload);
                 alert("Disbursement voucher saved successfully.");
             }
 
-            setShowAddModal(false);
-            resetForm();
-            await loadVouchers();
+            closeFormModal();
+            setRefreshKey((key) => key + 1);
         } catch (error) {
             console.error("Voucher save error:", error);
             console.error("Backend response:", error.response?.data);
 
-            const status = error.response?.status;
-            const data = error.response?.data;
-
-            if (status === 422) {
-                const messages = data?.errors
-                    ? Object.values(data.errors).flat().join("\n")
-                    : data?.message || "Please check the information entered.";
-
-                alert(messages);
-            } else if (status === 401) {
-                alert("Your session has expired. Please log in again.");
-            } else if (status === 403) {
-                alert("You are not authorized to save vouchers.");
-            } else {
-                alert(
-                    data?.message ||
+            alert(
+                getErrorMessage(
+                    error,
                     "Unable to save the voucher. Check the backend response."
-                );
-            }
+                )
+            );
         } finally {
             setSaving(false);
         }
     }
 
-    function printVoucher(voucher) {
+    function printVoucher(rawVoucher) {
+        const voucher = normalizeVoucher(rawVoucher);
         const printWindow = window.open("", "_blank", "width=900,height=750");
 
         if (!printWindow) {
@@ -360,6 +360,7 @@ export default function Vouchers() {
             <!doctype html>
             <html>
             <head>
+                <meta charset="utf-8">
                 <title>Disbursement Voucher ${escapeHtml(voucherNumber(voucher))}</title>
                 <style>
                     body { font-family: Arial, sans-serif; padding: 32px; color: #222; }
@@ -391,14 +392,17 @@ export default function Vouchers() {
                         <td>${escapeHtml(voucher.purpose)}</td>
                         <td class="amount">${escapeHtml(money(voucher.amount))}</td>
                     </tr>
-                    <tr><td><strong>Amount in Words</strong><br>${escapeHtml(voucher.amount_words || voucher.amountWords || "—")}</td><td></td></tr>
+                    <tr>
+                        <td><strong>Amount in Words</strong><br>${escapeHtml(voucher.amount_words)}</td>
+                        <td></td>
+                    </tr>
                 </table>
                 <p style="margin-top:18px"><strong>Payment Status:</strong> ${escapeHtml(voucher.status || "Pending")}</p>
                 <div class="signatures">
-                    <div class="signature"><strong>Prepared by:</strong><br>${escapeHtml(voucher.prepared_by || voucher.preparedBy)}</div>
-                    <div class="signature"><strong>Checked by:</strong><br>${escapeHtml(voucher.checked_by || voucher.checkedBy)}</div>
-                    <div class="signature"><strong>Approved by:</strong><br>${escapeHtml(voucher.approved_by || voucher.approvedBy)}</div>
-                    <div class="signature"><strong>Received by:</strong><br>${escapeHtml(voucher.received_by || voucher.receivedBy)}</div>
+                    <div class="signature"><strong>Prepared by:</strong><br>${escapeHtml(voucher.prepared_by)}</div>
+                    <div class="signature"><strong>Checked by:</strong><br>${escapeHtml(voucher.checked_by)}</div>
+                    <div class="signature"><strong>Approved by:</strong><br>${escapeHtml(voucher.approved_by)}</div>
+                    <div class="signature"><strong>Received by:</strong><br>${escapeHtml(voucher.received_by)}</div>
                 </div>
                 <script>window.onload = () => window.print();</script>
             </body>
@@ -430,8 +434,7 @@ export default function Vouchers() {
     );
 
     const paidToday = vouchers.reduce((sum, voucher) => {
-        const isPaid =
-            String(voucher.status || "").toLowerCase() === "paid";
+        const isPaid = String(voucher.status || "").toLowerCase() === "paid";
         const isToday = String(voucher.date || "").slice(0, 10) === getToday();
 
         return isPaid && isToday
@@ -462,7 +465,7 @@ export default function Vouchers() {
 
                     <button
                         type="button"
-                        onClick={loadVouchers}
+                        onClick={() => setRefreshKey((key) => key + 1)}
                         disabled={loading}
                         className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl border-2 border-white/80 hover:bg-white hover:text-[#102d55] disabled:opacity-50"
                     >
@@ -499,14 +502,32 @@ export default function Vouchers() {
                             onClick={openAddModal}
                             className="inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-5 py-3 rounded-xl font-semibold"
                         >
-                            <Plus size={19} />
-                            New Disbursement Voucher
+                            <Plus size={19} /> New Disbursement Voucher
                         </button>
                     </div>
 
                     {globalSearch && (
                         <div className="mx-6 my-4 rounded-xl bg-blue-50 border border-blue-100 px-4 py-3 text-sm text-blue-800">
                             Global search: <strong>{globalSearch}</strong> · {filteredVouchers.length} result(s)
+                        </div>
+                    )}
+
+                    {loadError && (
+                        <div className="mx-6 my-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                            <div className="flex items-start gap-2">
+                                <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                                <div className="flex-1">
+                                    <p className="font-semibold">Unable to load voucher records</p>
+                                    <p className="mt-1 whitespace-pre-line">{loadError}</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => setRefreshKey((key) => key + 1)}
+                                        className="mt-3 font-semibold underline"
+                                    >
+                                        Try again
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -523,29 +544,52 @@ export default function Vouchers() {
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {loading ? (
-                                    <tr><td colSpan="7" className="py-16 text-center text-gray-500"><RefreshCw size={28} className="animate-spin mx-auto mb-3" />Loading voucher records...</td></tr>
+                                    <tr>
+                                        <td colSpan="7" className="py-16 text-center text-gray-500">
+                                            <RefreshCw size={28} className="animate-spin mx-auto mb-3" />
+                                            Loading voucher records...
+                                        </td>
+                                    </tr>
                                 ) : filteredVouchers.length === 0 ? (
-                                    <tr><td colSpan="7" className="py-16 text-center text-gray-500"><Ticket size={35} className="mx-auto mb-3 text-gray-300" /><p className="font-semibold">No voucher records found.</p><p className="text-sm mt-1">{globalSearch ? "Try a different term in the global search." : "Create a disbursement voucher to get started."}</p></td></tr>
+                                    <tr>
+                                        <td colSpan="7" className="py-16 text-center text-gray-500">
+                                            <Ticket size={35} className="mx-auto mb-3 text-gray-300" />
+                                            <p className="font-semibold">
+                                                {loadError ? "Voucher records could not be loaded." : "No voucher records found."}
+                                            </p>
+                                            <p className="text-sm mt-1">
+                                                {loadError
+                                                    ? "Check the error above and try again."
+                                                    : globalSearch
+                                                        ? "Try a different term in the global search."
+                                                        : "Create a disbursement voucher to get started."}
+                                            </p>
+                                        </td>
+                                    </tr>
                                 ) : filteredVouchers.map((voucher) => (
                                     <tr key={voucher.id} className="hover:bg-blue-50/40">
                                         <td className="px-5 py-5 font-bold text-[#102d55]">{voucherNumber(voucher)}</td>
-                                        <td className="px-5 py-5 text-sm">{formatDate(voucher.date)}</td>
+                                        <td className="px-5 py-5 text-sm">{formatDate(voucherDate(voucher))}</td>
                                         <td className="px-5 py-5">{voucher.office || "—"}</td>
                                         <td className="px-5 py-5">
                                             <div className="flex items-center gap-3">
-                                                <div className="w-9 h-9 rounded-full bg-cyan-50 flex items-center justify-center"><User size={17} className="text-cyan-600" /></div>
+                                                <div className="w-9 h-9 rounded-full bg-cyan-50 flex items-center justify-center">
+                                                    <User size={17} className="text-cyan-600" />
+                                                </div>
                                                 <span className="font-semibold">{voucher.payee || "—"}</span>
                                             </div>
                                         </td>
-                                        <td className="px-5 py-5 max-w-[260px] truncate" title={voucher.purpose}>{voucher.purpose || "—"}</td>
+                                        <td className="px-5 py-5 max-w-[260px] truncate" title={voucher.purpose}>
+                                            {voucher.purpose || "—"}
+                                        </td>
                                         <td className="px-5 py-5">
                                             <span className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold ${statusStyle(voucher.status)}`}>
-                                                {statusIcon(voucher.status)}{voucher.status || "Pending"}
+                                                {statusIcon(voucher.status)} {voucher.status || "Pending"}
                                             </span>
                                         </td>
                                         <td className="px-5 py-5">
                                             <div className="flex items-center gap-2">
-                                                <button type="button" onClick={() => setSelectedVoucher(voucher)} className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-300 text-sm hover:bg-gray-50">
+                                                <button type="button" onClick={() => setSelectedVoucher(normalizeVoucher(voucher))} className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-300 text-sm hover:bg-gray-50">
                                                     <Eye size={15} /> View
                                                 </button>
                                                 <button type="button" onClick={() => openEditModal(voucher)} className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-300 text-sm hover:bg-gray-50">
@@ -575,7 +619,9 @@ export default function Vouchers() {
                     </div>
                     <div className="bg-white rounded-2xl border p-6">
                         <p className="font-bold text-gray-800">Payment Tracking</p>
-                        <p className="text-sm text-gray-600 mt-3">Use the voucher status to record the current payment stage. Saving a status does not itself authorize a payment.</p>
+                        <p className="text-sm text-gray-600 mt-3">
+                            Use the voucher status to record the current payment stage. Saving a status does not itself authorize a payment.
+                        </p>
                     </div>
                 </section>
             </main>
@@ -589,9 +635,13 @@ export default function Vouchers() {
                                 <h2 className="text-2xl font-bold text-[#102d55]">
                                     {editingVoucher ? "Edit Disbursement Voucher" : "New Disbursement Voucher"}
                                 </h2>
-                                <p className="text-sm text-gray-500 mt-1">Record the office, payee, payment purpose, and amount.</p>
+                                <p className="text-sm text-gray-500 mt-1">
+                                    Record the office, payee, payment purpose, and amount.
+                                </p>
                             </div>
-                            <button type="button" onClick={() => { setShowAddModal(false); resetForm(); }} className="p-2 rounded-lg hover:bg-gray-100"><X size={22} /></button>
+                            <button type="button" onClick={closeFormModal} className="p-2 rounded-lg hover:bg-gray-100" aria-label="Close voucher form">
+                                <X size={22} />
+                            </button>
                         </div>
 
                         <form onSubmit={handleSubmit} className="p-6 space-y-6">
@@ -654,7 +704,9 @@ export default function Vouchers() {
                             </div>
 
                             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
-                                <button type="button" onClick={() => { setShowAddModal(false); resetForm(); }} className="px-5 py-3 rounded-xl border border-gray-300 font-semibold hover:bg-gray-50">Cancel</button>
+                                <button type="button" onClick={closeFormModal} className="px-5 py-3 rounded-xl border border-gray-300 font-semibold hover:bg-gray-50">
+                                    Cancel
+                                </button>
                                 <button type="submit" disabled={saving} className="px-6 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white font-semibold disabled:opacity-50">
                                     {saving ? "Saving..." : editingVoucher ? "Update Voucher" : "Save Voucher"}
                                 </button>
@@ -672,7 +724,9 @@ export default function Vouchers() {
                                 <p className="text-sm text-gray-500">Disbursement Voucher</p>
                                 <h2 className="text-2xl font-bold text-[#102d55]">{voucherNumber(selectedVoucher)}</h2>
                             </div>
-                            <button type="button" onClick={() => setSelectedVoucher(null)} className="p-2 rounded-lg hover:bg-gray-100"><X size={22} /></button>
+                            <button type="button" onClick={() => setSelectedVoucher(null)} className="p-2 rounded-lg hover:bg-gray-100" aria-label="Close voucher details">
+                                <X size={22} />
+                            </button>
                         </div>
 
                         <div className="p-6 space-y-6">
@@ -682,7 +736,7 @@ export default function Vouchers() {
                                 <Detail label="Payee / Creditor" value={selectedVoucher.payee} />
                                 <Detail label="Payee Address" value={selectedVoucher.address} />
                                 <Detail label="Status" value={selectedVoucher.status || "Pending"} />
-                                <Detail label="Amount in Words" value={selectedVoucher.amount_words || selectedVoucher.amountWords} />
+                                <Detail label="Amount in Words" value={selectedVoucher.amount_words} />
                                 <div className="md:col-span-2">
                                     <p className="text-xs uppercase text-gray-500 mb-2">Purpose / Particulars</p>
                                     <div className="bg-gray-50 rounded-xl p-4 whitespace-pre-wrap">{selectedVoucher.purpose || "—"}</div>
@@ -695,20 +749,26 @@ export default function Vouchers() {
                             </div>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <Detail label="Prepared By" value={selectedVoucher.prepared_by || selectedVoucher.preparedBy} />
-                                <Detail label="Checked By" value={selectedVoucher.checked_by || selectedVoucher.checkedBy} />
-                                <Detail label="Approved By" value={selectedVoucher.approved_by || selectedVoucher.approvedBy} />
-                                <Detail label="Received By" value={selectedVoucher.received_by || selectedVoucher.receivedBy} />
+                                <Detail label="Prepared By" value={selectedVoucher.prepared_by} />
+                                <Detail label="Checked By" value={selectedVoucher.checked_by} />
+                                <Detail label="Approved By" value={selectedVoucher.approved_by} />
+                                <Detail label="Received By" value={selectedVoucher.received_by} />
                             </div>
 
                             <div className="flex flex-wrap justify-end gap-3">
-                                <button type="button" onClick={() => printVoucher(selectedVoucher)} className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-[#102d55] text-white font-semibold"><Printer size={17} /> Print Voucher</button>
-                                <button type="button" onClick={() => openEditModal(selectedVoucher)} className="px-4 py-3 rounded-xl bg-[#0797a6] text-white font-semibold">Edit Voucher</button>
+                                <button type="button" onClick={() => printVoucher(selectedVoucher)} className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-[#102d55] text-white font-semibold">
+                                    <Printer size={17} /> Print Voucher
+                                </button>
+                                <button type="button" onClick={() => openEditModal(selectedVoucher)} className="px-4 py-3 rounded-xl bg-[#0797a6] text-white font-semibold">
+                                    Edit Voucher
+                                </button>
                             </div>
                         </div>
 
                         <div className="flex justify-end p-6 border-t">
-                            <button type="button" onClick={() => setSelectedVoucher(null)} className="px-5 py-3 border border-gray-300 rounded-xl font-semibold hover:bg-gray-50">Close</button>
+                            <button type="button" onClick={() => setSelectedVoucher(null)} className="px-5 py-3 border border-gray-300 rounded-xl font-semibold hover:bg-gray-50">
+                                Close
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -746,7 +806,9 @@ function SummaryCard({ title, value, icon, color = "text-[#102d55]" }) {
                     <p className="text-sm text-gray-500">{title}</p>
                     <h2 className={`text-2xl font-bold mt-2 ${color}`}>{value}</h2>
                 </div>
-                <div className={`w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center ${color}`}>{icon}</div>
+                <div className={`w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center ${color}`}>
+                    {icon}
+                </div>
             </div>
         </div>
     );

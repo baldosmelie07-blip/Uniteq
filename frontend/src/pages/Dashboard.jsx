@@ -17,7 +17,6 @@ import {
     ChevronRight,
     CircleAlert,
     CheckCircle2,
-    XCircle,
     Eye,
     Landmark,
     FileCheck,
@@ -39,11 +38,19 @@ function getArray(data) {
     if (Array.isArray(data?.data)) return data.data;
     if (Array.isArray(data?.receipts)) return data.receipts;
     if (Array.isArray(data?.vouchers)) return data.vouchers;
+    if (Array.isArray(data?.recent)) return data.recent;
+    if (Array.isArray(data?.logs)) return data.logs;
     return [];
 }
 
 function getDate(item) {
-    return item?.date || item?.collection_date || item?.created_at || null;
+    return (
+        item?.date ||
+        item?.collection_date ||
+        item?.voucher_date ||
+        item?.created_at ||
+        null
+    );
 }
 
 function parseDate(value) {
@@ -86,12 +93,14 @@ function displayDate(value) {
 }
 
 function getReceiptAmount(item) {
-    return Number(
-        item?.amount ??
-        item?.total_amount ??
-        item?.collection_amount ??
-        0
-    ) || 0;
+    return (
+        Number(
+            item?.amount ??
+                item?.total_amount ??
+                item?.collection_amount ??
+                0
+        ) || 0
+    );
 }
 
 function getVoucherAmount(item) {
@@ -159,6 +168,7 @@ function normalizeStatus(status) {
     }
 
     if (value.includes("approv")) return "Approved";
+
     if (value.includes("review") || value.includes("verification")) {
         return "Under Review";
     }
@@ -225,9 +235,7 @@ function SummaryCard({
                         )}
                     </p>
 
-                    <p className="mt-2 text-xs text-slate-500">
-                        {subtitle}
-                    </p>
+                    <p className="mt-2 text-xs text-slate-500">{subtitle}</p>
                 </div>
 
                 <div
@@ -286,9 +294,11 @@ function EmptyState({ icon: Icon = Receipt, message }) {
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
                 <Icon size={23} />
             </div>
+
             <p className="mt-3 text-sm font-semibold text-slate-700">
                 {message}
             </p>
+
             <p className="mt-1 text-xs text-slate-400">
                 Records will appear here when available.
             </p>
@@ -305,14 +315,10 @@ function ActivityItem({ activity }) {
         activity?.user_name ||
         activity?.user?.name ||
         activity?.actor?.name ||
-        (activity?.user_id
-            ? `User #${activity.user_id}`
-            : "System");
+        (activity?.user_id ? `User #${activity.user_id}` : "System");
 
     const timestamp = activity?.created_at || activity?.action_at;
-
     const date = timestamp ? new Date(timestamp) : null;
-
     const validDate = date && !Number.isNaN(date.getTime());
 
     const actionColor =
@@ -390,10 +396,13 @@ export default function Dashboard() {
     }, []);
 
     const isAdministrator =
-        String(currentUser?.role || "").toLowerCase() ===
+        String(currentUser?.role || "").trim().toLowerCase() ===
         "system administrator";
 
-    const today = new Date();
+    const today = useMemo(() => new Date(), []);
+    const todayKey = `${today.getFullYear()}-${String(
+        today.getMonth() + 1
+    ).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
     const loadDashboardData = useCallback(async () => {
         setLoading(true);
@@ -413,7 +422,7 @@ export default function Dashboard() {
                 vouchersResult.status === "rejected"
             ) {
                 throw new Error(
-                    "Unable to load financial records. Check your connection and try again."
+                    "Unable to load financial records. Check your connection and API configuration, then try again."
                 );
             }
 
@@ -457,15 +466,7 @@ export default function Dashboard() {
 
         try {
             const response = await api.get("/activity-logs/summary");
-            const data = response.data;
-
-            setActivities(
-                Array.isArray(data?.recent)
-                    ? data.recent
-                    : Array.isArray(data?.logs)
-                      ? data.logs
-                      : []
-            );
+            setActivities(getArray(response.data));
         } catch (err) {
             console.error("Activity loading error:", err);
             setActivities([]);
@@ -492,34 +493,33 @@ export default function Dashboard() {
         [vouchers]
     );
 
-    const todaysCollections = useMemo(() => {
-        return receipts.reduce((sum, item) => {
-            const date = parseDate(getDate(item));
+    const todaysCollections = useMemo(
+        () =>
+            receipts.reduce((sum, item) => {
+                const date = parseDate(getDate(item));
 
-            if (
-                date &&
-                date.getFullYear() === today.getFullYear() &&
-                date.getMonth() === today.getMonth() &&
-                date.getDate() === today.getDate()
-            ) {
-                return sum + getReceiptAmount(item);
-            }
+                if (!date) return sum;
 
-            return sum;
-        }, 0);
-    }, [receipts, today.getDate(), today.getMonth(), today.getFullYear()]);
+                const itemDateKey = `${date.getFullYear()}-${String(
+                    date.getMonth() + 1
+                ).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
-    const pendingVouchers = useMemo(() => {
-        return vouchers.filter((item) => {
-            const status = normalizeStatus(item.status);
+                return itemDateKey === todayKey
+                    ? sum + getReceiptAmount(item)
+                    : sum;
+            }, 0),
+        [receipts, todayKey]
+    );
 
-            return (
-                status === "Pending" ||
-                status === "Under Review" ||
-                status === "Returned"
-            );
-        }).length;
-    }, [vouchers]);
+    const pendingVouchers = useMemo(
+        () =>
+            vouchers.filter((item) =>
+                ["Pending", "Under Review", "Returned"].includes(
+                    normalizeStatus(item.status)
+                )
+            ).length,
+        [vouchers]
+    );
 
     const transactions = useMemo(() => {
         const receiptItems = receipts.map((item) => ({
@@ -648,9 +648,7 @@ export default function Dashboard() {
         const link = document.createElement("a");
 
         link.href = url;
-        link.download = `uniteq-transactions-${new Date()
-            .toISOString()
-            .slice(0, 10)}.csv`;
+        link.download = `uniteq-transactions-${todayKey}.csv`;
 
         document.body.appendChild(link);
         link.click();
@@ -660,7 +658,6 @@ export default function Dashboard() {
 
     return (
         <div className="mx-auto w-full max-w-[1600px] space-y-6">
-            {/* PAGE HEADER */}
             <section className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                     <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
@@ -711,14 +708,10 @@ export default function Dashboard() {
                 </div>
             </section>
 
-            {/* DATA LOAD ERROR */}
             {error && (
                 <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-start gap-2">
-                        <CircleAlert
-                            size={18}
-                            className="mt-0.5 shrink-0"
-                        />
+                        <CircleAlert size={18} className="mt-0.5 shrink-0" />
                         <p>{error}</p>
                     </div>
 
@@ -732,7 +725,6 @@ export default function Dashboard() {
                 </div>
             )}
 
-            {/* FINANCIAL SUMMARY */}
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <SummaryCard
                     title="Today's Collections"
@@ -771,9 +763,7 @@ export default function Dashboard() {
                 />
             </section>
 
-            {/* WORKSPACE GRID */}
             <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
-                {/* TRANSACTIONS */}
                 <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
                     <div className="flex flex-col gap-4 border-b border-slate-100 p-5 sm:p-6">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -802,7 +792,6 @@ export default function Dashboard() {
                                     size={16}
                                     className="shrink-0 text-slate-400"
                                 />
-
                                 <input
                                     type="search"
                                     value={search}
@@ -810,6 +799,7 @@ export default function Dashboard() {
                                         setSearch(event.target.value)
                                     }
                                     placeholder="Search reference or payee..."
+                                    aria-label="Search transactions"
                                     className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
                                 />
                             </div>
@@ -841,9 +831,7 @@ export default function Dashboard() {
                                 <option value="Completed">Completed</option>
                                 <option value="Approved">Approved</option>
                                 <option value="Pending">Pending</option>
-                                <option value="Under Review">
-                                    Under Review
-                                </option>
+                                <option value="Under Review">Under Review</option>
                                 <option value="Returned">Returned</option>
                                 <option value="Rejected">Rejected</option>
                             </select>
@@ -945,9 +933,7 @@ export default function Dashboard() {
                                             </td>
 
                                             <td className="px-5 py-4">
-                                                <StatusBadge
-                                                    status={item.status}
-                                                />
+                                                <StatusBadge status={item.status} />
                                             </td>
 
                                             <td className="whitespace-nowrap px-5 py-4 text-right text-xs font-semibold text-slate-800">
@@ -989,9 +975,7 @@ export default function Dashboard() {
                             <button
                                 type="button"
                                 onClick={() =>
-                                    setPage((current) =>
-                                        Math.max(0, current - 1)
-                                    )
+                                    setPage((current) => Math.max(0, current - 1))
                                 }
                                 disabled={page === 0}
                                 className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -1021,13 +1005,11 @@ export default function Dashboard() {
                     </div>
                 </div>
 
-                {/* QUICK ACTIONS */}
                 <aside className="space-y-5">
                     <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
                         <h2 className="text-base font-bold text-slate-900">
                             Quick Actions
                         </h2>
-
                         <p className="mt-1 text-xs text-slate-500">
                             Common cashier operations
                         </p>
@@ -1040,7 +1022,6 @@ export default function Dashboard() {
                                 description="Open collection workspace"
                                 color="teal"
                             />
-
                             <QuickAction
                                 to="/receipts"
                                 icon={Receipt}
@@ -1048,7 +1029,6 @@ export default function Dashboard() {
                                 description="View receipt records"
                                 color="blue"
                             />
-
                             <QuickAction
                                 to="/vouchers"
                                 icon={FileText}
@@ -1056,7 +1036,6 @@ export default function Dashboard() {
                                 description="Review voucher records"
                                 color="orange"
                             />
-
                             <QuickAction
                                 to="/reconciliation"
                                 icon={FileCheck}
@@ -1064,7 +1043,6 @@ export default function Dashboard() {
                                 description="Review financial records"
                                 color="violet"
                             />
-
                             <QuickAction
                                 to="/reports"
                                 icon={TrendingUp}
@@ -1085,11 +1063,7 @@ export default function Dashboard() {
                                     Current voucher records
                                 </p>
                             </div>
-
-                            <Clock3
-                                size={19}
-                                className="text-amber-600"
-                            />
+                            <Clock3 size={19} className="text-amber-600" />
                         </div>
 
                         <div className="space-y-4 p-5">
@@ -1135,10 +1109,7 @@ export default function Dashboard() {
 
                     <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 to-white p-5">
                         <div className="flex items-center gap-2">
-                            <ShieldCheck
-                                size={19}
-                                className="text-blue-700"
-                            />
+                            <ShieldCheck size={19} className="text-blue-700" />
                             <h2 className="text-sm font-bold text-slate-900">
                                 Responsible Access
                             </h2>
@@ -1158,7 +1129,6 @@ export default function Dashboard() {
                 </aside>
             </section>
 
-            {/* RECENT STAFF ACTIVITY */}
             <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
                 <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
                     <div className="flex items-center gap-3">
@@ -1179,9 +1149,7 @@ export default function Dashboard() {
                     <div className="flex flex-wrap items-center gap-3">
                         <span className="text-xs text-slate-500">
                             {activities.length}{" "}
-                            {activities.length === 1
-                                ? "activity"
-                                : "activities"}
+                            {activities.length === 1 ? "activity" : "activities"}
                         </span>
 
                         <button
@@ -1192,9 +1160,7 @@ export default function Dashboard() {
                         >
                             <RefreshCw
                                 size={14}
-                                className={
-                                    activityLoading ? "animate-spin" : ""
-                                }
+                                className={activityLoading ? "animate-spin" : ""}
                             />
                             Refresh
                         </button>
@@ -1217,10 +1183,7 @@ export default function Dashboard() {
 
                 {activityLoading ? (
                     <div className="flex items-center justify-center gap-2 px-5 py-10 text-sm text-slate-500">
-                        <RefreshCw
-                            size={17}
-                            className="animate-spin"
-                        />
+                        <RefreshCw size={17} className="animate-spin" />
                         Loading recent activity...
                     </div>
                 ) : activities.length === 0 ? (
@@ -1243,11 +1206,8 @@ export default function Dashboard() {
                 )}
             </section>
 
-            {/* FOOTER */}
             <footer className="flex flex-col gap-2 border-t border-slate-200 pt-4 text-[11px] text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-                <p>
-                    UniTeq · Financial Transactions Management
-                </p>
+                <p>UniTeq · Financial Transactions Management</p>
 
                 <p className="flex items-center gap-1.5">
                     <CalendarDays size={13} />
