@@ -1,3 +1,4 @@
+
 <?php
 
 use Illuminate\Support\Facades\Route;
@@ -6,51 +7,101 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ReceiptController;
 use App\Http\Controllers\Api\VoucherController;
+use App\Http\Controllers\Api\ActivityLogController;
+use App\Http\Controllers\Api\CollectionController;
 
-// Authentication
+use App\Http\Middleware\EnsureSystemAdministrator;
 
+/*
+|--------------------------------------------------------------------------
+| Public Routes
+|--------------------------------------------------------------------------
+*/
+
+// Login
 Route::post('/login', [AuthController::class, 'login']);
 
 
-// Protected API
+/*
+|--------------------------------------------------------------------------
+| Authenticated Routes
+|--------------------------------------------------------------------------
+*/
 
 Route::middleware('auth:sanctum')->group(function () {
 
     // Authentication
-
     Route::get('/me', [AuthController::class, 'me']);
-
     Route::post('/logout', [AuthController::class, 'logout']);
 
 
-    // Users
+    /*
+    |--------------------------------------------------------------------------
+    | User Management
+    |--------------------------------------------------------------------------
+    | System Administrator only
+    |--------------------------------------------------------------------------
+    */
 
-    Route::apiResource('users', UserController::class);
+    Route::middleware(EnsureSystemAdministrator::class)->group(function () {
+        Route::apiResource('users', UserController::class);
+    });
 
 
-    // Receipts
+    /*
+    |--------------------------------------------------------------------------
+    | Registered Collections
+    |--------------------------------------------------------------------------
+    | Used by Receipts.jsx to select a collection and load its fixed fee.
+    |--------------------------------------------------------------------------
+    */
+
+    Route::apiResource('collections', CollectionController::class);
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Receipts and Payments
+    |--------------------------------------------------------------------------
+    */
 
     Route::apiResource('receipts', ReceiptController::class);
 
-
-    // Pending balances
-
+    // Outstanding balances
     Route::get(
         '/pending-balances',
         [ReceiptController::class, 'pendingBalances']
     );
 
-
-    // Record payment
-
+    // Record an additional payment against a receipt
     Route::post(
         '/receipts/{receipt}/payment',
         [ReceiptController::class, 'recordPayment']
     );
 
 
-   // Vouchers
+    /*
+    |--------------------------------------------------------------------------
+    | Vouchers
+    |--------------------------------------------------------------------------
+    */
 
     Route::apiResource('vouchers', VoucherController::class);
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | Activity Logs
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/activity-logs',
+        [ActivityLogController::class, 'index']
+    );
+
+    Route::get(
+        '/activity-logs/summary',
+        [ActivityLogController::class, 'summary']
+    );
 });

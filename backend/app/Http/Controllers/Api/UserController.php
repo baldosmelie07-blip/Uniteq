@@ -5,42 +5,99 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class UserController extends Controller
 {
     /**
-     * Check if the logged-in user is a System Administrator.
+     * Allow only an authenticated System Administrator.
+     *
+     * Keep this check even when the API routes also use
+     * EnsureSystemAdministrator middleware.
      */
-    private function ensureSystemAdministrator(Request $request)
+    private function ensureSystemAdministrator(Request $request): void
     {
+        $currentUser = $request->user();
+
         if (
-            !$request->user() ||
-            $request->user()->role !== 'System Administrator'
+            !$currentUser ||
+            $currentUser->role !== 'System Administrator'
         ) {
-            abort(
-                response()->json([
-                    'message' => 'Only the System Administrator can manage users.'
-                ], 403)
-            );
+            abort(response()->json([
+                'message' => 'Only the System Administrator can manage user accounts.',
+            ], 403));
+        }
+
+        if (
+            strtolower((string) $currentUser->status) !== 'active'
+        ) {
+            abort(response()->json([
+                'message' => 'Your account is inactive.',
+            ], 403));
         }
     }
 
     /**
-     * Display all users.
+     * Roles that can be assigned to users.
+     */
+    private function allowedRoles(): array
+    {
+        return [
+            'System Administrator',
+            'Cashier',
+            'Reviewer',
+            'Viewer',
+        ];
+    }
+
+    /**
+     * Hide sensitive fields in API responses.
+     */
+    private function safeUser(User $user): array
+    {
+        return $user
+            ->makeHidden([
+                'password',
+                'remember_token',
+            ])
+            ->toArray();
+    }
+
+    /**
+     * Determine whether another active administrator exists.
+     */
+    private function hasAnotherActiveAdministrator(
+        User $user
+    ): bool {
+        return User::query()
+            ->where('role', 'System Administrator')
+            ->where('status', 'Active')
+            ->where('id', '!=', $user->id)
+            ->exists();
+    }
+
+    /**
+     * List all users.
      */
     public function index(Request $request)
     {
         $this->ensureSystemAdministrator($request);
 
-        return response()->json(
-            User::latest()->get()
-        );
+        $users = User::query()
+            ->latest()
+            ->get()
+            ->map(fn (User $user) => $this->safeUser($user));
+
+        return response()->json($users);
     }
 
     /**
-     * Create a new user.
+     * Create a user account.
+     *
+     * This endpoint must not be publicly accessible.
      */
     public function store(Request $request)
     {
@@ -55,6 +112,7 @@ class UserController extends Controller
 
             'email' => [
                 'required',
+                'string',
                 'email',
                 'max:255',
                 'unique:users,email',
@@ -69,10 +127,7 @@ class UserController extends Controller
 
             'role' => [
                 'required',
-                Rule::in([
-                    'System Administrator',
-                    'Cashier',
-                ]),
+                Rule::in($this->allowedRoles()),
             ],
 
             'status' => [
@@ -84,67 +139,73 @@ class UserController extends Controller
             ],
         ]);
 
-        $validated['password'] = Hash::make(
-            $validated['password']
-        );
-
-        $user = User::create($validated);
+        $user = DB::transaction(function () use ($validated) {
+            return User::create([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                'role' => $validated['role'],
+                'status' => $validated['status'],
+            ]);
+        });
 
         return response()->json([
-            'message' => 'User created successfully.',
-            'user' => $user,
+            'message' => 'User account created successfully.',
+            'user' => $this->safeUser($user),
         ], 201);
     }
 
     /**
-     * Display a specific user.
+     * Show one user.
      */
-    public function show(
-        Request $request,
-        string $id
-    ) {
+    public function show(Request $request, string $id)
+    {
         $this->ensureSystemAdministrator($request);
 
         $user = User::findOrFail($id);
 
-        return response()->json($user);
+        return response()->json(
+            $this->safeUser($user)
+        );
     }
 
     /**
-     * Update a user.
+     * Update an account.
+     *
+     * Supports partial updates. Only supplied, validated
+     * fields are changed.
      */
-    public function update(
-        Request $request,
-        string $id
-    ) {
+    public function update(Request $request, string $id)
+    {
         $this->ensureSystemAdministrator($request);
 
         $user = User::findOrFail($id);
 
         $validated = $request->validate([
             'name' => [
+                'sometimes',
                 'required',
                 'string',
                 'max:255',
             ],
 
             'email' => [
+                'sometimes',
                 'required',
+                'string',
                 'email',
                 'max:255',
-                Rule::unique('users', 'email')
-                    ->ignore($user->id),
+                Rule::unique('users', 'email')->ignore($user->id),
             ],
 
             'role' => [
+                'sometimes',
                 'required',
-                Rule::in([
-                    'System Administrator',
-                    'Cashier',
-                ]),
+                Rule::in($this->allowedRoles()),
             ],
 
             'status' => [
+                'sometimes',
                 'required',
                 Rule::in([
                     'Active',
@@ -153,6 +214,7 @@ class UserController extends Controller
             ],
 
             'password' => [
+                'sometimes',
                 'nullable',
                 'string',
                 'min:8',
@@ -160,98 +222,135 @@ class UserController extends Controller
             ],
         ]);
 
-        /*
-         * Prevent administrator from removing
-         * their own administrator privileges.
-         */
-        if ($user->id === $request->user()->id) {
+        if (empty($validated)) {
+            return response()->json([
+                'message' => 'No valid changes were provided.',
+            ], 422);
+        }
 
+        // Prevent an administrator from removing their own access.
+        if ((string) $user->id === (string) $request->user()->id) {
             if (
-                $validated['role'] !==
-                'System Administrator'
+                isset($validated['role']) &&
+                $validated['role'] !== 'System Administrator'
             ) {
                 return response()->json([
-                    'message' =>
-                        'You cannot remove your own System Administrator role.'
+                    'message' => 'You cannot remove your own System Administrator role.',
                 ], 422);
             }
 
             if (
+                isset($validated['status']) &&
                 $validated['status'] !== 'Active'
             ) {
                 return response()->json([
-                    'message' =>
-                        'You cannot deactivate your own account.'
+                    'message' => 'You cannot deactivate your own account.',
                 ], 422);
             }
         }
 
-        /*
-         * Only change password if a new password
-         * was entered.
-         */
+        // Determine the account's status after this update.
+        $newRole = $validated['role'] ?? $user->role;
+        $newStatus = $validated['status'] ?? $user->status;
+
+        // Do not leave the system without an active administrator.
+        $losesAdminAccess =
+            $user->role === 'System Administrator' &&
+            $user->status === 'Active' &&
+            (
+                $newRole !== 'System Administrator' ||
+                $newStatus !== 'Active'
+            );
+
         if (
-            isset($validated['password']) &&
-            $validated['password'] !== ''
+            $losesAdminAccess &&
+            !$this->hasAnotherActiveAdministrator($user)
         ) {
-            $validated['password'] =
-                Hash::make(
-                    $validated['password']
-                );
+            return response()->json([
+                'message' => 'This change is not allowed because it would leave UniTeq without an active System Administrator.',
+            ], 422);
+        }
+
+        $passwordWasChanged =
+            array_key_exists('password', $validated) &&
+            $validated['password'] !== null &&
+            $validated['password'] !== '';
+
+        if ($passwordWasChanged) {
+            $validated['password'] = Hash::make(
+                $validated['password']
+            );
         } else {
             unset($validated['password']);
         }
 
-        $user->update($validated);
+        // Never write fields that were not explicitly validated.
+        DB::transaction(function () use (
+            $user,
+            $validated,
+            $newRole,
+            $newStatus,
+            $passwordWasChanged
+        ) {
+            $user->fill($validated);
+            $user->save();
 
-        /*
-         * Revoke tokens if account becomes inactive.
-         */
-        if ($user->status === 'Inactive') {
-            $user->tokens()->delete();
-        }
+            $accessChanged =
+                $user->role !== $newRole ||
+                $user->status !== $newStatus;
+
+            // Revoke existing tokens if access changes or
+            // the password is changed.
+            if (
+                $accessChanged ||
+                $passwordWasChanged ||
+                $newStatus !== 'Active'
+            ) {
+                $user->tokens()->delete();
+            }
+        });
 
         return response()->json([
-            'message' =>
-                'User updated successfully.',
-            'user' => $user->fresh(),
+            'message' => 'User account updated successfully.',
+            'user' => $this->safeUser($user->fresh()),
         ]);
     }
 
     /**
-     * Delete a user.
+     * Delete a user account.
      */
-    public function destroy(
-        Request $request,
-        string $id
-    ) {
+    public function destroy(Request $request, string $id)
+    {
         $this->ensureSystemAdministrator($request);
 
         $user = User::findOrFail($id);
 
-        /*
-         * Prevent deleting your own account.
-         */
-        if (
-            $user->id ===
-            $request->user()->id
-        ) {
+        // Prevent the administrator from deleting themselves.
+        if ((string) $user->id === (string) $request->user()->id) {
             return response()->json([
-                'message' =>
-                    'You cannot delete your own account.'
+                'message' => 'You cannot delete your own account.',
             ], 422);
         }
 
-        /*
-         * Revoke tokens before deletion.
-         */
-        $user->tokens()->delete();
+        // Preserve at least one active administrator.
+        if (
+            $user->role === 'System Administrator' &&
+            $user->status === 'Active' &&
+            !$this->hasAnotherActiveAdministrator($user)
+        ) {
+            return response()->json([
+                'message' => 'This account cannot be deleted because it is the last active System Administrator.',
+            ], 422);
+        }
 
-        $user->delete();
+        DB::transaction(function () use ($user) {
+            // Revoke Sanctum tokens before deleting the account.
+            $user->tokens()->delete();
+            $user->delete();
+        });
 
         return response()->json([
-            'message' =>
-                'User deleted successfully.'
+            'message' => 'User account deleted successfully.',
         ]);
     }
 }

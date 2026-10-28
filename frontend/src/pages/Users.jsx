@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import {
     Users as UsersIcon,
@@ -18,7 +18,15 @@ import {
 } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000/api";
-const LOGO_URL = "/university-of-abra-logo.png";
+
+const ROLES = [
+    "System Administrator",
+    "Cashier",
+    "Reviewer",
+    "Viewer",
+];
+
+const STATUSES = ["Active", "Inactive"];
 
 const EMPTY_FORM = {
     name: "",
@@ -29,52 +37,56 @@ const EMPTY_FORM = {
     password_confirmation: "",
 };
 
-function getHeaders() {
-    const token = localStorage.getItem("uniteq_token");
-
-    return {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(token
-            ? {
-                  Authorization: `Bearer ${token}`,
-              }
-            : {}),
-    };
-}
-
 function getStoredUser() {
     try {
-        return JSON.parse(
+        const stored =
             localStorage.getItem("uniteq_user") ||
-                sessionStorage.getItem("uniteq_user") ||
-                "null"
-        );
-    } catch {
+            sessionStorage.getItem("uniteq_user");
+
+        return stored ? JSON.parse(stored) : null;
+    } catch (error) {
+        console.error("Unable to read stored user:", error);
         return null;
     }
 }
 
-function getToday() {
-    const now = new Date();
+function getHeaders() {
+    const token =
+        localStorage.getItem("uniteq_token") ||
+        sessionStorage.getItem("uniteq_token");
 
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
+    return {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+}
 
-    return `${year}-${month}-${day}`;
+function getErrorMessage(error, fallback) {
+    const status = error.response?.status;
+    const data = error.response?.data;
+
+    if (status === 401) {
+        return "Your session has expired. Please log in again.";
+    }
+
+    if (status === 403) {
+        return "You are not authorized to perform this action.";
+    }
+
+    if (status === 422 && data?.errors) {
+        return Object.values(data.errors).flat().join("\n");
+    }
+
+    return data?.message || fallback;
 }
 
 function formatDate(value) {
-    if (!value) {
-        return "Not recorded";
-    }
+    if (!value) return "—";
 
     const date = new Date(value);
 
-    if (Number.isNaN(date.getTime())) {
-        return "Not recorded";
-    }
+    if (Number.isNaN(date.getTime())) return "—";
 
     return date.toLocaleString("en-PH", {
         year: "numeric",
@@ -86,212 +98,199 @@ function formatDate(value) {
 }
 
 function getRoleClass(role) {
-    if (role === "System Administrator") {
-        return "bg-purple-100 text-purple-700";
-    }
-
-    return "bg-blue-100 text-blue-700";
+    return role === "System Administrator"
+        ? "bg-purple-100 text-purple-700"
+        : "bg-blue-100 text-blue-700";
 }
 
 function getStatusClass(status) {
-    if (status === "Active") {
-        return "bg-green-100 text-green-700";
+    return status === "Active"
+        ? "bg-green-100 text-green-700"
+        : "bg-red-100 text-red-700";
+}
+
+function normalizeUsers(responseData) {
+    if (Array.isArray(responseData)) {
+        return responseData;
     }
 
-    return "bg-red-100 text-red-700";
+    if (Array.isArray(responseData?.data)) {
+        return responseData.data;
+    }
+
+    if (Array.isArray(responseData?.users)) {
+        return responseData.users;
+    }
+
+    return [];
+}
+
+function Modal({ title, onClose, children }) {
+    return (
+        <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                    onClose();
+                }
+            }}
+        >
+            <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white shadow-xl">
+                <div className="sticky top-0 flex items-center justify-between border-b bg-white px-6 py-4">
+                    <h2 className="text-lg font-bold text-gray-800">
+                        {title}
+                    </h2>
+
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+                        aria-label="Close modal"
+                    >
+                        <X size={20} />
+                    </button>
+                </div>
+
+                <div className="p-6">{children}</div>
+            </div>
+        </div>
+    );
+}
+
+function Field({ label, children }) {
+    return (
+        <label className="block space-y-2">
+            <span className="text-sm font-semibold text-gray-700">
+                {label}
+            </span>
+            {children}
+        </label>
+    );
+}
+
+function StatCard({ title, value, icon: Icon, color }) {
+    return (
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+                <div>
+                    <p className="text-sm text-gray-500">{title}</p>
+                    <p className="mt-2 text-2xl font-bold text-gray-800">
+                        {value}
+                    </p>
+                </div>
+
+                <div className={`rounded-xl p-3 ${color}`}>
+                    <Icon size={23} />
+                </div>
+            </div>
+        </div>
+    );
 }
 
 export default function Users() {
     const [users, setUsers] = useState([]);
-
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [pageError, setPageError] = useState("");
 
     const [search, setSearch] = useState("");
     const [roleFilter, setRoleFilter] = useState("All");
     const [statusFilter, setStatusFilter] = useState("All");
-
-    const [dateFrom, setDateFrom] = useState(getToday());
-    const [dateTo, setDateTo] = useState(getToday());
 
     const [showUserModal, setShowUserModal] = useState(false);
     const [showRoleModal, setShowRoleModal] = useState(false);
     const [showAuditModal, setShowAuditModal] = useState(false);
 
     const [editingUser, setEditingUser] = useState(null);
-
     const [selectedRoleUserId, setSelectedRoleUserId] = useState("");
     const [selectedRole, setSelectedRole] = useState("Cashier");
-
     const [form, setForm] = useState(EMPTY_FORM);
 
-    const currentUser = useMemo(
-        () => getStoredUser(),
-        []
-    );
+    const currentUser = useMemo(() => getStoredUser(), []);
+    const currentRole = String(currentUser?.role || "").trim();
 
-    const isAdmin =
-        String(currentUser?.role || "").trim() ===
-        "System Administrator";
+    const isAdmin = currentRole === "System Administrator";
 
-    /* =========================================================
-       LOAD USERS
-    ========================================================= */
-
-    useEffect(() => {
-        loadUsers();
-    }, []);
-
-    async function loadUsers() {
+    const loadUsers = useCallback(async (showError = true) => {
         try {
             setLoading(true);
+            setPageError("");
 
-            const response = await axios.get(
-                `${API_URL}/users`,
-                {
-                    headers: getHeaders(),
-                }
-            );
+            const response = await axios.get(`${API_URL}/users`, {
+                headers: getHeaders(),
+            });
 
-            console.log("Users response:", response.data);
-
-            const data = Array.isArray(response.data)
-                ? response.data
-                : response.data?.data || [];
-
-            setUsers(data);
+            setUsers(normalizeUsers(response.data));
         } catch (error) {
             console.error("User loading error:", error);
-            console.error(
-                "Server response:",
-                error.response?.data
-            );
+            console.error("Server response:", error.response?.data);
 
             setUsers([]);
 
-            if (error.response?.status === 401) {
-                alert(
-                    "Your session has expired. Please log in again."
-                );
-            } else if (error.response?.status === 403) {
-                alert(
-                    "You are not authorized to view user accounts."
-                );
-            } else {
-                alert(
-                    error.response?.data?.message ||
-                        "Unable to load user accounts."
-                );
+            const message = getErrorMessage(
+                error,
+                "Unable to load user accounts. Check that the Laravel server is running and the API route exists."
+            );
+
+            setPageError(message);
+
+            if (showError) {
+                alert(message);
             }
         } finally {
             setLoading(false);
         }
-    }
+    }, []);
 
-    /* =========================================================
-       SUMMARY
-    ========================================================= */
-
-    const totalUsers = users.length;
+    useEffect(() => {
+        loadUsers();
+    }, [loadUsers]);
 
     const activeUsers = users.filter(
-        (user) =>
-            String(user.status || "Active") ===
-            "Active"
+        (user) => String(user.status || "Active") === "Active"
     ).length;
 
-    const inactiveUsers = users.filter(
-        (user) =>
-            String(user.status || "Active") !==
-            "Active"
-    ).length;
-
-    const roleCounts = useMemo(() => {
-        const counts = {};
-
-        users.forEach((user) => {
-            const role =
-                user.role || "Unassigned";
-
-            counts[role] =
-                (counts[role] || 0) + 1;
-        });
-
-        return counts;
-    }, [users]);
-
-    const systemAdminCount =
-        roleCounts["System Administrator"] || 0;
-
-    const cashierCount =
-        roleCounts["Cashier"] || 0;
-
-    /* =========================================================
-       FILTER
-    ========================================================= */
+    const inactiveUsers = users.length - activeUsers;
 
     const filteredUsers = useMemo(() => {
-        const query = search.trim().toLowerCase();
+        const term = search.trim().toLowerCase();
 
-        return [...users]
-            .filter((user) => {
-                if (
-                    roleFilter !== "All" &&
-                    String(user.role || "") !== roleFilter
-                ) {
-                    return false;
-                }
+        return users.filter((user) => {
+            const matchesSearch =
+                !term ||
+                String(user.name || "").toLowerCase().includes(term) ||
+                String(user.email || "").toLowerCase().includes(term) ||
+                String(user.role || "").toLowerCase().includes(term) ||
+                String(user.id || "").includes(term);
 
-                if (
-                    statusFilter !== "All" &&
-                    String(
-                        user.status || "Active"
-                    ) !== statusFilter
-                ) {
-                    return false;
-                }
+            const matchesRole =
+                roleFilter === "All" || user.role === roleFilter;
 
-                const searchableText = `
-                    ${user.id || ""}
-                    ${user.name || ""}
-                    ${user.email || ""}
-                    ${user.role || ""}
-                    ${user.status || ""}
-                `.toLowerCase();
+            const matchesStatus =
+                statusFilter === "All" ||
+                String(user.status || "Active") === statusFilter;
 
-                if (
-                    query &&
-                    !searchableText.includes(query)
-                ) {
-                    return false;
-                }
+            return matchesSearch && matchesRole && matchesStatus;
+        });
+    }, [users, search, roleFilter, statusFilter]);
 
-                return true;
-            })
-            .sort((a, b) => {
-                return (
-                    Number(a.id || 0) -
-                    Number(b.id || 0)
-                );
-            });
-    }, [
-        users,
-        search,
-        roleFilter,
-        statusFilter,
-    ]);
+    function openAddModal() {
+        if (!isAdmin) {
+            alert("Only the System Administrator can manage user accounts.");
+            return;
+        }
 
-    /* =========================================================
-       FORM
-    ========================================================= */
-
-    function openCreateUser() {
         setEditingUser(null);
-        setForm(EMPTY_FORM);
+        setForm({ ...EMPTY_FORM });
         setShowUserModal(true);
     }
 
-    function openEditUser(user) {
+    function openEditModal(user) {
+        if (!isAdmin) {
+            alert("Only the System Administrator can manage user accounts.");
+            return;
+        }
+
         setEditingUser(user);
 
         setForm({
@@ -307,20 +306,15 @@ export default function Users() {
     }
 
     function closeUserModal() {
-        if (saving) {
-            return;
-        }
+        if (saving) return;
 
         setShowUserModal(false);
         setEditingUser(null);
-        setForm(EMPTY_FORM);
+        setForm({ ...EMPTY_FORM });
     }
 
     function handleChange(event) {
-        const {
-            name,
-            value,
-        } = event.target;
+        const { name, value } = event.target;
 
         setForm((previous) => ({
             ...previous,
@@ -328,17 +322,11 @@ export default function Users() {
         }));
     }
 
-    /* =========================================================
-       CREATE / UPDATE USER
-    ========================================================= */
-
     async function handleSubmit(event) {
         event.preventDefault();
 
         if (!isAdmin) {
-            alert(
-                "Only the System Administrator can manage user accounts."
-            );
+            alert("Only the System Administrator can manage user accounts.");
             return;
         }
 
@@ -352,13 +340,8 @@ export default function Users() {
             return;
         }
 
-        if (!form.role) {
-            alert("Please select a system role.");
-            return;
-        }
-
-        if (!form.status) {
-            alert("Please select an account status.");
+        if (!form.role || !form.status) {
+            alert("Please select a role and account status.");
             return;
         }
 
@@ -367,64 +350,44 @@ export default function Users() {
             return;
         }
 
-        if (
-            form.password &&
-            form.password.length < 8
-        ) {
-            alert(
-                "Password must contain at least 8 characters."
-            );
+        if (form.password && form.password.length < 8) {
+            alert("Password must contain at least 8 characters.");
             return;
         }
 
-        if (
-            form.password !==
-            form.password_confirmation
-        ) {
+        if (form.password !== form.password_confirmation) {
             alert("The passwords do not match.");
             return;
+        }
+
+        const payload = {
+            name: form.name.trim(),
+            email: form.email.trim(),
+            role: form.role,
+            status: form.status,
+        };
+
+        if (form.password) {
+            payload.password = form.password;
+            payload.password_confirmation = form.password_confirmation;
         }
 
         try {
             setSaving(true);
 
-            const payload = {
-                name: form.name.trim(),
-                email: form.email.trim(),
-                role: form.role,
-                status: form.status,
-            };
-
-            if (form.password) {
-                payload.password = form.password;
-                payload.password_confirmation =
-                    form.password_confirmation;
-            }
-
-            let response;
-
             if (editingUser) {
-                response = await axios.put(
+                await axios.put(
                     `${API_URL}/users/${editingUser.id}`,
                     payload,
-                    {
-                        headers: getHeaders(),
-                    }
+                    { headers: getHeaders() }
                 );
             } else {
-                response = await axios.post(
+                await axios.post(
                     `${API_URL}/users`,
                     payload,
-                    {
-                        headers: getHeaders(),
-                    }
+                    { headers: getHeaders() }
                 );
             }
-
-            console.log(
-                "User save response:",
-                response.data
-            );
 
             alert(
                 editingUser
@@ -432,77 +395,27 @@ export default function Users() {
                     : "User account created successfully."
             );
 
-            closeUserModal();
+            setShowUserModal(false);
+            setEditingUser(null);
+            setForm({ ...EMPTY_FORM });
 
-            await loadUsers();
+            await loadUsers(false);
         } catch (error) {
-            console.error(
-                "User save error:",
-                error
-            );
-
-            const status =
-                error.response?.status;
-
-            const data =
-                error.response?.data;
-
-            if (status === 422) {
-                const validationErrors =
-                    data?.errors;
-
-                if (validationErrors) {
-                    alert(
-                        Object.values(
-                            validationErrors
-                        )
-                            .flat()
-                            .join("\n")
-                    );
-                } else {
-                    alert(
-                        data?.message ||
-                            "Please check the information entered."
-                    );
-                }
-            } else if (status === 401) {
-                alert(
-                    "Your session has expired. Please log in again."
-                );
-            } else if (status === 403) {
-                alert(
-                    "Access denied. Only the System Administrator can manage user accounts."
-                );
-            } else {
-                alert(
-                    data?.message ||
-                        "Unable to save the user account."
-                );
-            }
+            console.error("User save error:", error);
+            alert(getErrorMessage(error, "Unable to save the user account."));
         } finally {
             setSaving(false);
         }
     }
 
-    /* =========================================================
-       DELETE USER
-    ========================================================= */
-
     async function handleDeleteUser(user) {
         if (!isAdmin) {
-            alert(
-                "Only the System Administrator can delete user accounts."
-            );
+            alert("Only the System Administrator can delete user accounts.");
             return;
         }
 
-        if (
-            Number(currentUser?.id) ===
-            Number(user.id)
-        ) {
-            alert(
-                "You cannot delete the account you are currently using."
-            );
+        if (Number(currentUser?.id) === Number(user.id)) {
+            alert("You cannot delete the account you are currently using.");
             return;
         }
 
@@ -510,79 +423,42 @@ export default function Users() {
             `Delete the account for "${user.name}"?\n\nThis action cannot be undone.`
         );
 
-        if (!confirmed) {
-            return;
-        }
+        if (!confirmed) return;
 
         try {
-            await axios.delete(
-                `${API_URL}/users/${user.id}`,
-                {
-                    headers: getHeaders(),
-                }
-            );
+            await axios.delete(`${API_URL}/users/${user.id}`, {
+                headers: getHeaders(),
+            });
 
-            alert(
-                "User account deleted successfully."
-            );
-
-            await loadUsers();
+            alert("User account deleted successfully.");
+            await loadUsers(false);
         } catch (error) {
-            console.error(
-                "Delete user error:",
-                error
-            );
-
-            if (
-                error.response?.status ===
-                401
-            ) {
-                alert(
-                    "Your session has expired. Please log in again."
-                );
-            } else if (
-                error.response?.status ===
-                403
-            ) {
-                alert(
-                    "You are not authorized to delete user accounts."
-                );
-            } else {
-                alert(
-                    error.response?.data?.message ||
-                        "Unable to delete the user account."
-                );
-            }
+            console.error("Delete user error:", error);
+            alert(getErrorMessage(error, "Unable to delete the user account."));
         }
     }
 
-    /* =========================================================
-       TOGGLE STATUS
-    ========================================================= */
-
     async function toggleStatus(user) {
         if (!isAdmin) {
-            alert(
-                "Only the System Administrator can change account status."
-            );
+            alert("Only the System Administrator can change account status.");
             return;
         }
 
-        if (
-            Number(currentUser?.id) ===
-            Number(user.id)
-        ) {
-            alert(
-                "You cannot deactivate the account you are currently using."
-            );
+        if (Number(currentUser?.id) === Number(user.id)) {
+            alert("You cannot change the status of your current account.");
             return;
         }
 
         const nextStatus =
-            String(user.status || "Active") ===
-            "Active"
+            String(user.status || "Active") === "Active"
                 ? "Inactive"
                 : "Active";
+
+        const confirmed = window.confirm(
+            `Change ${user.name}'s account status to ${nextStatus}?`
+        );
+
+        if (!confirmed) return;
 
         try {
             await axios.put(
@@ -590,107 +466,61 @@ export default function Users() {
                 {
                     name: user.name,
                     email: user.email,
-                    role:
-                        user.role ||
-                        "Cashier",
+                    role: user.role || "Cashier",
                     status: nextStatus,
                 },
-                {
-                    headers: getHeaders(),
-                }
+                { headers: getHeaders() }
             );
 
-            await loadUsers();
+            await loadUsers(false);
         } catch (error) {
-            console.error(
-                "Status update error:",
-                error
-            );
-
-            alert(
-                error.response?.data?.message ||
-                    "Unable to update account status."
-            );
+            console.error("Status update error:", error);
+            alert(getErrorMessage(error, "Unable to update account status."));
         }
     }
 
-    /* =========================================================
-       ROLE ASSIGNMENT
-    ========================================================= */
-
     function openRoleModal() {
         if (!isAdmin) {
-            alert(
-                "Only the System Administrator can assign system roles."
-            );
+            alert("Only the System Administrator can assign system roles.");
             return;
         }
 
         const firstUser = users[0];
 
-        setSelectedRoleUserId(
-            firstUser?.id
-                ? String(firstUser.id)
-                : ""
-        );
-
-        setSelectedRole(
-            firstUser?.role ||
-                "Cashier"
-        );
-
+        setSelectedRoleUserId(firstUser ? String(firstUser.id) : "");
+        setSelectedRole(firstUser?.role || "Cashier");
         setShowRoleModal(true);
     }
 
     function handleRoleUserChange(event) {
         const userId = event.target.value;
-
         setSelectedRoleUserId(userId);
 
-        const selectedUser =
-            users.find(
-                (user) =>
-                    String(user.id) ===
-                    String(userId)
-            );
-
-        setSelectedRole(
-            selectedUser?.role ||
-                "Cashier"
+        const user = users.find(
+            (item) => String(item.id) === String(userId)
         );
+
+        setSelectedRole(user?.role || "Cashier");
     }
 
     async function saveAssignedRole() {
-        if (!selectedRoleUserId) {
-            alert(
-                "Please select a user."
-            );
+        if (!isAdmin) {
+            alert("Only the System Administrator can assign system roles.");
             return;
         }
 
-        const selectedUser =
-            users.find(
-                (user) =>
-                    String(user.id) ===
-                    String(
-                        selectedRoleUserId
-                    )
-            );
+        const user = users.find(
+            (item) => String(item.id) === String(selectedRoleUserId)
+        );
 
-        if (!selectedUser) {
-            alert("User not found.");
+        if (!user) {
+            alert("Please select a valid user.");
             return;
         }
 
-        if (
-            Number(currentUser?.id) ===
-                Number(selectedUser.id) &&
-            selectedRole !==
-                "System Administrator"
-        ) {
-            alert(
-                "You cannot remove your own System Administrator role while logged in."
-            );
+        if (Number(currentUser?.id) === Number(user.id) &&
+            selectedRole !== "System Administrator") {
+            alert("You cannot remove your own System Administrator role while logged in.");
             return;
         }
 
@@ -698,708 +528,181 @@ export default function Users() {
             setSaving(true);
 
             await axios.put(
-                `${API_URL}/users/${selectedUser.id}`,
+                `${API_URL}/users/${user.id}`,
                 {
-                    name:
-                        selectedUser.name,
-                    email:
-                        selectedUser.email,
+                    name: user.name,
+                    email: user.email,
                     role: selectedRole,
-                    status:
-                        selectedUser.status ||
-                        "Active",
+                    status: user.status || "Active",
                 },
-                {
-                    headers:
-                        getHeaders(),
-                }
+                { headers: getHeaders() }
             );
 
-            alert(
-                "System role updated successfully."
-            );
-
+            alert("System role updated successfully.");
             setShowRoleModal(false);
 
-            await loadUsers();
+            await loadUsers(false);
         } catch (error) {
-            console.error(
-                "Role update error:",
-                error
-            );
-
-            alert(
-                error.response?.data?.message ||
-                    "Unable to assign the system role."
-            );
+            console.error("Role update error:", error);
+            alert(getErrorMessage(error, "Unable to assign the system role."));
         } finally {
             setSaving(false);
         }
     }
 
-    /* =========================================================
-       AUDIT TOOL
-    ========================================================= */
-
-    function openAuditModal() {
-        setShowAuditModal(true);
-    }
-
-    /* =========================================================
-       RENDER
-    ========================================================= */
-
     return (
-        <div className="min-h-screen bg-[#f5f7fa]">
-
-            {/* =================================================
-                HEADER
-            ================================================= */}
-
-            <div className="bg-[#102d55] text-white">
-
-                <div className="max-w-[1500px] mx-auto px-6 py-7">
-
-                    <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-5">
-
-                        <div className="flex items-center gap-5">
-
-                            <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-lg">
-
-                                <img
-                                    src={LOGO_URL}
-                                    alt="University of Abra"
-                                    className="w-12 h-12 object-contain"
-                                />
-
+        <div className="min-h-screen bg-gray-50 p-4 sm:p-6 lg:p-8">
+            <div className="mx-auto max-w-7xl space-y-6">
+                {/* Page heading */}
+                <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+                    <div>
+                        <div className="flex items-center gap-3">
+                            <div className="rounded-xl bg-blue-100 p-3 text-blue-700">
+                                <UsersIcon size={27} />
                             </div>
 
                             <div>
-
-                                <p className="text-sm text-blue-100">
-                                    University of Abra | Main Campus
-                                    <span className="mx-2">
-                                        •
-                                    </span>
-                                    Cashier's Unit
-                                </p>
-
-                                <h1 className="text-3xl sm:text-4xl font-bold mt-1">
-                                    User Management Page
+                                <h1 className="text-2xl font-bold text-gray-900">
+                                    User Management
                                 </h1>
-
-                                <p className="text-blue-100 mt-2">
-                                    Manage authorized UniTeq user accounts,
-                                    roles, and account status.
+                                <p className="mt-1 text-sm text-gray-500">
+                                    Manage UniTeq user accounts, roles, and access.
                                 </p>
-
                             </div>
-
                         </div>
-
-                        <div className="flex items-center gap-3">
-
-                            <div className="hidden sm:block text-right">
-
-                                <p className="text-xs text-blue-200">
-                                    System Date
-                                </p>
-
-                                <p className="font-semibold">
-                                    {new Date().toLocaleString(
-                                        "en-PH",
-                                        {
-                                            year: "numeric",
-                                            month: "short",
-                                            day: "2-digit",
-                                            hour: "2-digit",
-                                            minute: "2-digit",
-                                        }
-                                    )}
-                                </p>
-
-                            </div>
-
-                            <button
-                                type="button"
-                                onClick={loadUsers}
-                                disabled={loading}
-                                className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl border-2 border-white/80 hover:bg-white hover:text-[#102d55] transition font-semibold disabled:opacity-50"
-                            >
-
-                                <RefreshCw
-                                    size={18}
-                                    className={
-                                        loading
-                                            ? "animate-spin"
-                                            : ""
-                                    }
-                                />
-
-                                Refresh
-
-                            </button>
-
-                        </div>
-
                     </div>
 
-                </div>
-
-            </div>
-
-            {/* =================================================
-                MAIN
-            ================================================= */}
-
-            <main className="max-w-[1500px] mx-auto px-6 py-8 space-y-7">
-
-                {/* =================================================
-                    PAGE TITLE
-                ================================================= */}
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-
-                        <div>
-
-                            <h2 className="text-3xl font-bold text-gray-900">
-                                User Management Page
-                            </h2>
-
-                            <p className="text-gray-500 mt-1">
-                                View, create, update, and manage authorized system accounts.
-                            </p>
-
-                        </div>
-
-                        <div className="flex items-center gap-2 text-sm">
-
-                            <span className="inline-flex items-center gap-2 bg-green-100 text-green-700 px-3 py-2 rounded-full font-semibold">
-
-                                <span className="w-2 h-2 rounded-full bg-green-500" />
-
-                                System Connected
-
-                            </span>
-
-                        </div>
-
-                    </div>
-
-                    {/* DATE FILTER */}
-
-                    <div className="mt-6 flex flex-col lg:flex-row lg:items-end gap-4">
-
-                        <div className="w-full lg:w-52">
-
-                            <label className="block text-xs uppercase font-bold text-gray-500 mb-2">
-                                From
-                            </label>
-
-                            <input
-                                type="date"
-                                value={dateFrom}
-                                onChange={(event) =>
-                                    setDateFrom(
-                                        event.target.value
-                                    )
-                                }
-                                className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={() => loadUsers()}
+                            disabled={loading}
+                            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                            <RefreshCw
+                                size={17}
+                                className={loading ? "animate-spin" : ""}
                             />
-
-                        </div>
-
-                        <div className="w-full lg:w-52">
-
-                            <label className="block text-xs uppercase font-bold text-gray-500 mb-2">
-                                To
-                            </label>
-
-                            <input
-                                type="date"
-                                value={dateTo}
-                                onChange={(event) =>
-                                    setDateTo(
-                                        event.target.value
-                                    )
-                                }
-                                className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                            />
-
-                        </div>
+                            Refresh
+                        </button>
 
                         <button
                             type="button"
-                            onClick={() => {
-                                if (
-                                    dateFrom &&
-                                    dateTo &&
-                                    dateFrom >
-                                        dateTo
-                                ) {
-                                    alert(
-                                        "The From date cannot be later than the To date."
-                                    );
-                                    return;
-                                }
-
-                                loadUsers();
-                            }}
-                            className="inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-5 py-3 rounded-xl font-semibold"
+                            onClick={openRoleModal}
+                            disabled={!isAdmin}
+                            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-
-                            Apply
-
+                            <ShieldCheck size={17} />
+                            Assign Role
                         </button>
 
+                        <button
+                            type="button"
+                            onClick={openAddModal}
+                            disabled={!isAdmin}
+                            className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <UserPlus size={17} />
+                            Add User
+                        </button>
                     </div>
-
                 </div>
 
-                {/* =================================================
-                    SUMMARY + ROLE DISTRIBUTION + FILTER
-                ================================================= */}
-
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-
-                    {/* LEFT CARD */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <h3 className="text-xl font-bold text-gray-900">
-                                User Summary
-                            </h3>
-
-                            <div className="w-11 h-11 rounded-xl bg-blue-50 flex items-center justify-center">
-                                <UsersIcon
-                                    size={23}
-                                    className="text-[#102d55]"
-                                />
-                            </div>
-
-                        </div>
-
-                        <div className="mt-6 space-y-4">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Users
-                                </p>
-
-                                <p className="text-3xl font-bold text-[#102d55]">
-                                    {loading
-                                        ? "..."
-                                        : totalUsers}
-                                </p>
-
-                            </div>
-
-                            <div className="flex items-center justify-between border-t pt-4">
-
-                                <span className="text-gray-600">
-                                    Active
-                                </span>
-
-                                <span className="font-bold text-green-600">
-                                    {activeUsers}
-                                </span>
-
-                            </div>
-
-                            <div className="flex items-center justify-between">
-
-                                <span className="text-gray-600">
-                                    Inactive
-                                </span>
-
-                                <span className="font-bold text-red-600">
-                                    {inactiveUsers}
-                                </span>
-
-                            </div>
-
-                        </div>
-
+                {!isAdmin && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                        Your stored account role is not{" "}
+                        <strong>System Administrator</strong>. User-management
+                        actions are disabled.
                     </div>
+                )}
 
-                    {/* CENTER CARD */}
+                {pageError && (
+                    <div className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="whitespace-pre-line">{pageError}</p>
 
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <h3 className="text-xl font-bold text-gray-900">
-                                Role Distribution
-                            </h3>
-
-                            <div className="w-11 h-11 rounded-xl bg-purple-50 flex items-center justify-center">
-                                <ShieldCheck
-                                    size={23}
-                                    className="text-purple-700"
-                                />
-                            </div>
-
-                        </div>
-
-                        <div className="mt-6 space-y-4">
-
-                            <div className="flex items-center justify-between">
-
-                                <div className="flex items-center gap-3">
-
-                                    <div className="w-9 h-9 rounded-lg bg-purple-50 flex items-center justify-center">
-                                        <ShieldCheck
-                                            size={17}
-                                            className="text-purple-700"
-                                        />
-                                    </div>
-
-                                    <span className="text-gray-700">
-                                        System Administrators
-                                    </span>
-
-                                </div>
-
-                                <span className="text-2xl font-bold text-purple-700">
-                                    {systemAdminCount}
-                                </span>
-
-                            </div>
-
-                            <div className="flex items-center justify-between">
-
-                                <div className="flex items-center gap-3">
-
-                                    <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
-                                        <UserCog
-                                            size={17}
-                                            className="text-blue-700"
-                                        />
-                                    </div>
-
-                                    <span className="text-gray-700">
-                                        Cashiers
-                                    </span>
-
-                                </div>
-
-                                <span className="text-2xl font-bold text-blue-700">
-                                    {cashierCount}
-                                </span>
-
-                            </div>
-
-                            {/* OTHER ROLES, IF THEY EXIST */}
-
-                            {Object.entries(
-                                roleCounts
-                            )
-                                .filter(
-                                    ([role]) =>
-                                        role !==
-                                            "System Administrator" &&
-                                        role !==
-                                            "Cashier"
-                                )
-                                .map(
-                                    ([
-                                        role,
-                                        count,
-                                    ]) => (
-                                        <div
-                                            key={
-                                                role
-                                            }
-                                            className="flex items-center justify-between"
-                                        >
-
-                                            <span className="text-gray-700">
-                                                {role}
-                                            </span>
-
-                                            <span className="text-xl font-bold text-gray-700">
-                                                {count}
-                                            </span>
-
-                                        </div>
-                                    )
-                                )}
-
-                        </div>
-
+                        <button
+                            type="button"
+                            onClick={() => loadUsers()}
+                            className="shrink-0 rounded-lg bg-red-100 px-3 py-2 font-semibold hover:bg-red-200"
+                        >
+                            Try Again
+                        </button>
                     </div>
+                )}
 
-                    {/* RIGHT CARD */}
+                {/* Summary cards */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <StatCard
+                        title="Total Users"
+                        value={users.length}
+                        icon={UsersIcon}
+                        color="bg-blue-100 text-blue-700"
+                    />
 
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                    <StatCard
+                        title="Active Accounts"
+                        value={activeUsers}
+                        icon={CheckCircle}
+                        color="bg-green-100 text-green-700"
+                    />
 
-                        <div className="flex items-center gap-3 mb-5">
+                    <StatCard
+                        title="Inactive Accounts"
+                        value={inactiveUsers}
+                        icon={XCircle}
+                        color="bg-red-100 text-red-700"
+                    />
+                </div>
 
-                            <div className="w-11 h-11 rounded-xl bg-cyan-50 flex items-center justify-center">
-                                <Search
-                                    size={22}
-                                    className="text-[#0797a6]"
-                                />
-                            </div>
-
-                            <h3 className="text-xl font-bold text-gray-900">
-                                User Search & Filter
-                            </h3>
-
-                        </div>
-
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Search
-                        </label>
-
+                {/* Search and filters */}
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                         <div className="relative">
-
                             <Search
-                                size={17}
+                                size={19}
                                 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
                             />
 
                             <input
-                                type="text"
+                                type="search"
                                 value={search}
-                                onChange={(event) =>
-                                    setSearch(
-                                        event.target.value
-                                    )
-                                }
-                                placeholder="Search by name, ID, or email"
-                                className="w-full border border-gray-300 rounded-xl pl-10 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                onChange={(event) => setSearch(event.target.value)}
+                                placeholder="Search name, email, role, or ID..."
+                                className="w-full rounded-lg border border-gray-300 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                             />
-
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-4 mt-4">
+                        <select
+                            value={roleFilter}
+                            onChange={(event) => setRoleFilter(event.target.value)}
+                            className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500"
+                        >
+                            <option value="All">All Roles</option>
+                            {ROLES.map((role) => (
+                                <option key={role} value={role}>
+                                    {role}
+                                </option>
+                            ))}
+                        </select>
 
-                            <div>
-
-                                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                    Role
-                                </label>
-
-                                <select
-                                    value={
-                                        roleFilter
-                                    }
-                                    onChange={(
-                                        event
-                                    ) =>
-                                        setRoleFilter(
-                                            event.target
-                                                .value
-                                        )
-                                    }
-                                    className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                >
-
-                                    <option value="All">
-                                        All Roles
-                                    </option>
-
-                                    <option value="System Administrator">
-                                        System Administrator
-                                    </option>
-
-                                    <option value="Cashier">
-                                        Cashier
-                                    </option>
-
-                                    {Object.keys(
-                                        roleCounts
-                                    )
-                                        .filter(
-                                            (role) =>
-                                                role !==
-                                                    "System Administrator" &&
-                                                role !==
-                                                    "Cashier"
-                                        )
-                                        .map(
-                                            (
-                                                role
-                                            ) => (
-                                                <option
-                                                    key={
-                                                        role
-                                                    }
-                                                    value={
-                                                        role
-                                                    }
-                                                >
-                                                    {role}
-                                                </option>
-                                            )
-                                        )}
-
-                                </select>
-
-                            </div>
-
-                            <div>
-
-                                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                    Status
-                                </label>
-
-                                <select
-                                    value={
-                                        statusFilter
-                                    }
-                                    onChange={(
-                                        event
-                                    ) =>
-                                        setStatusFilter(
-                                            event.target
-                                                .value
-                                        )
-                                    }
-                                    className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                >
-
-                                    <option value="All">
-                                        All Status
-                                    </option>
-
-                                    <option value="Active">
-                                        Active
-                                    </option>
-
-                                    <option value="Inactive">
-                                        Inactive
-                                    </option>
-
-                                </select>
-
-                            </div>
-
-                        </div>
-
+                        <select
+                            value={statusFilter}
+                            onChange={(event) => setStatusFilter(event.target.value)}
+                            className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500"
+                        >
+                            <option value="All">All Statuses</option>
+                            {STATUSES.map((status) => (
+                                <option key={status} value={status}>
+                                    {status}
+                                </option>
+                            ))}
+                        </select>
                     </div>
 
-                </div>
-
-                {/* =================================================
-                    MANAGEMENT TOOLS
-                ================================================= */}
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-
-                        <div>
-
-                            <h3 className="text-xl font-bold text-gray-900">
-                                Management Tools
-                            </h3>
-
-                            <p className="text-sm text-gray-500 mt-1">
-                                Administrative actions for UniTeq user accounts.
-                            </p>
-
-                        </div>
-
-                        <div className="flex flex-wrap gap-3">
-
-                            <button
-                                type="button"
-                                onClick={
-                                    openCreateUser
-                                }
-                                disabled={
-                                    !isAdmin
-                                }
-                                className="inline-flex items-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-5 py-3 rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-
-                                <UserPlus
-                                    size={18}
-                                />
-
-                                Create New User
-
-                            </button>
-
-                            <button
-                                type="button"
-                                onClick={
-                                    openRoleModal
-                                }
-                                disabled={
-                                    !isAdmin ||
-                                    users.length ===
-                                        0
-                                }
-                                className="inline-flex items-center gap-2 border border-gray-300 hover:bg-gray-50 px-5 py-3 rounded-xl font-semibold text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-
-                                <ShieldCheck
-                                    size={18}
-                                />
-
-                                Assign System Roles
-
-                            </button>
-
-                            <button
-                                type="button"
-                                onClick={
-                                    openAuditModal
-                                }
-                                className="inline-flex items-center gap-2 border border-gray-300 hover:bg-gray-50 px-5 py-3 rounded-xl font-semibold text-gray-700"
-                            >
-
-                                <Activity
-                                    size={18}
-                                />
-
-                                Audit System Access Logs
-
-                            </button>
-
-                        </div>
-
-                    </div>
-
-                    {!isAdmin && (
-                        <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-sm text-yellow-800">
-                            User management actions are available only to the System Administrator.
-                        </div>
-                    )}
-
-                </div>
-
-                {/* =================================================
-                    USER TABLE
-                ================================================= */}
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-
-                    <div className="p-6 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-
-                        <div>
-
-                            <h3 className="text-2xl font-bold text-gray-900">
-                                User Registry
-                            </h3>
-
-                            <p className="text-sm text-gray-500 mt-1">
-                                {filteredUsers.length} displayed user account
-                                {filteredUsers.length !==
-                                1
-                                    ? "s"
-                                    : ""}
-                            </p>
-
-                        </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-gray-500">
+                        <span>
+                            Showing {filteredUsers.length} of {users.length} users
+                        </span>
 
                         <button
                             type="button"
@@ -1408,1003 +711,417 @@ export default function Users() {
                                 setRoleFilter("All");
                                 setStatusFilter("All");
                             }}
-                            className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-semibold hover:bg-gray-50"
+                            className="font-semibold text-blue-700 hover:underline"
                         >
-                            Clear Filters
+                            Clear filters
                         </button>
+                    </div>
+                </div>
 
+                {/* Users table */}
+                <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                    <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+                        <div>
+                            <h2 className="font-bold text-gray-800">
+                                Registered Accounts
+                            </h2>
+                            <p className="mt-1 text-sm text-gray-500">
+                                View and manage registered system users.
+                            </p>
+                        </div>
+
+                        <Activity className="text-gray-400" size={21} />
                     </div>
 
-                    <div className="overflow-x-auto">
-
-                        <table className="w-full min-w-[1150px]">
-
-                            <thead className="bg-[#eef4f8]">
-
-                                <tr>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        User ID
-                                    </th>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Full Name
-                                    </th>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Email Address
-                                    </th>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        System Role
-                                    </th>
-
-                                    <th className="text-center px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Account Status
-                                    </th>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Last Login
-                                    </th>
-
-                                    <th className="text-center px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Action
-                                    </th>
-
-                                </tr>
-
-                            </thead>
-
-                            <tbody className="divide-y divide-gray-100">
-
-                                {loading ? (
+                    {loading ? (
+                        <div className="flex items-center justify-center gap-3 p-12 text-gray-500">
+                            <RefreshCw size={20} className="animate-spin" />
+                            Loading user accounts...
+                        </div>
+                    ) : filteredUsers.length === 0 ? (
+                        <div className="p-12 text-center">
+                            <UsersIcon
+                                size={40}
+                                className="mx-auto mb-3 text-gray-300"
+                            />
+                            <h3 className="font-semibold text-gray-700">
+                                No user accounts found
+                            </h3>
+                            <p className="mt-1 text-sm text-gray-500">
+                                Try changing your search or filters.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full min-w-[850px] text-left text-sm">
+                                <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                                     <tr>
-
-                                        <td
-                                            colSpan="7"
-                                            className="py-16 text-center text-gray-500"
-                                        >
-
-                                            <RefreshCw
-                                                size={28}
-                                                className="animate-spin mx-auto mb-3"
-                                            />
-
-                                            Loading user accounts...
-
-                                        </td>
-
+                                        <th className="px-5 py-4">User</th>
+                                        <th className="px-5 py-4">Role</th>
+                                        <th className="px-5 py-4">Status</th>
+                                        <th className="px-5 py-4">Created</th>
+                                        <th className="px-5 py-4 text-right">Actions</th>
                                     </tr>
-                                ) : filteredUsers.length === 0 ? (
-                                    <tr>
+                                </thead>
 
-                                        <td
-                                            colSpan="7"
-                                            className="py-16 text-center text-gray-500"
-                                        >
+                                <tbody className="divide-y divide-gray-100">
+                                    {filteredUsers.map((user) => {
+                                        const isCurrentUser =
+                                            Number(currentUser?.id) === Number(user.id);
 
-                                            <UsersIcon
-                                                size={36}
-                                                className="mx-auto mb-3 text-gray-300"
-                                            />
-
-                                            <p className="font-semibold">
-                                                No user accounts found.
-                                            </p>
-
-                                            <p className="text-sm mt-1">
-                                                Try another search or create a new user.
-                                            </p>
-
-                                        </td>
-
-                                    </tr>
-                                ) : (
-                                    filteredUsers.map(
-                                        (user) => {
-                                            const status =
-                                                user.status ||
-                                                "Active";
-
-                                            return (
-                                                <tr
-                                                    key={
-                                                        user.id
-                                                    }
-                                                    className="hover:bg-blue-50/40 transition"
-                                                >
-
-                                                    {/* USER ID */}
-
-                                                    <td className="px-5 py-5">
-
-                                                        <span className="font-bold text-[#102d55]">
-                                                            UA-
-                                                            {String(
-                                                                user.id ||
-                                                                    0
-                                                            ).padStart(
-                                                                4,
-                                                                "0"
-                                                            )}
-                                                        </span>
-
-                                                    </td>
-
-                                                    {/* NAME */}
-
-                                                    <td className="px-5 py-5">
-
-                                                        <div className="flex items-center gap-3">
-
-                                                            <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center">
-
-                                                                <UsersIcon
-                                                                    size={
-                                                                        18
-                                                                    }
-                                                                    className="text-[#102d55]"
-                                                                />
-
-                                                            </div>
-
-                                                            <div>
-
-                                                                <p className="font-bold text-gray-900">
-                                                                    {
-                                                                        user.name
-                                                                    }
-                                                                </p>
-
-                                                                <p className="text-xs text-gray-500">
-                                                                    Account #
-                                                                    {
-                                                                        user.id
-                                                                    }
-                                                                </p>
-
-                                                            </div>
-
+                                        return (
+                                            <tr
+                                                key={user.id}
+                                                className="hover:bg-gray-50"
+                                            >
+                                                <td className="px-5 py-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 font-bold text-blue-700">
+                                                            {String(user.name || "U")
+                                                                .trim()
+                                                                .charAt(0)
+                                                                .toUpperCase()}
                                                         </div>
 
-                                                    </td>
+                                                        <div>
+                                                            <p className="font-semibold text-gray-800">
+                                                                {user.name || "Unnamed User"}
+                                                                {isCurrentUser && (
+                                                                    <span className="ml-2 text-xs font-normal text-blue-600">
+                                                                        You
+                                                                    </span>
+                                                                )}
+                                                            </p>
 
-                                                    {/* EMAIL */}
+                                                            <p className="mt-1 text-gray-500">
+                                                                {user.email || "No email"}
+                                                            </p>
 
-                                                    <td className="px-5 py-5 text-sm text-gray-700">
+                                                            <p className="mt-1 text-xs text-gray-400">
+                                                                ID: {user.id}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </td>
 
-                                                        {
-                                                            user.email
-                                                        }
+                                                <td className="px-5 py-4">
+                                                    <span
+                                                        className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getRoleClass(user.role)}`}
+                                                    >
+                                                        {user.role || "Unassigned"}
+                                                    </span>
+                                                </td>
 
-                                                    </td>
+                                                <td className="px-5 py-4">
+                                                    <span
+                                                        className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getStatusClass(user.status || "Active")}`}
+                                                    >
+                                                        {user.status || "Active"}
+                                                    </span>
+                                                </td>
 
-                                                    {/* ROLE */}
+                                                <td className="px-5 py-4 text-gray-500">
+                                                    {formatDate(user.created_at)}
+                                                </td>
 
-                                                    <td className="px-5 py-5">
-
-                                                        <span
-                                                            className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold ${getRoleClass(
-                                                                user.role
-                                                            )}`}
+                                                <td className="px-5 py-4">
+                                                    <div className="flex justify-end gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openEditModal(user)}
+                                                            disabled={!isAdmin}
+                                                            title="Edit user"
+                                                            className="rounded-lg border border-blue-200 p-2 text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
                                                         >
-
-                                                            <ShieldCheck
-                                                                size={
-                                                                    14
-                                                                }
-                                                            />
-
-                                                            {
-                                                                user.role
-                                                            }
-
-                                                        </span>
-
-                                                    </td>
-
-                                                    {/* STATUS */}
-
-                                                    <td className="px-5 py-5 text-center">
+                                                            <Edit size={16} />
+                                                        </button>
 
                                                         <button
                                                             type="button"
-                                                            onClick={() =>
-                                                                toggleStatus(
-                                                                    user
-                                                                )
-                                                            }
-                                                            disabled={
-                                                                !isAdmin ||
-                                                                Number(
-                                                                    currentUser?.id
-                                                                ) ===
-                                                                    Number(
-                                                                        user.id
-                                                                    )
-                                                            }
+                                                            onClick={() => toggleStatus(user)}
+                                                            disabled={!isAdmin || isCurrentUser}
                                                             title={
-                                                                isAdmin &&
-                                                                Number(
-                                                                    currentUser?.id
-                                                                ) !==
-                                                                    Number(
-                                                                        user.id
-                                                                    )
-                                                                    ? "Click to change status"
-                                                                    : "You cannot change this account's status"
+                                                                user.status === "Active"
+                                                                    ? "Deactivate account"
+                                                                    : "Activate account"
                                                             }
-                                                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold ${getStatusClass(
-                                                                status
-                                                            )} disabled:cursor-not-allowed`}
+                                                            className="rounded-lg border border-amber-200 p-2 text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"
                                                         >
-
-                                                            {status ===
-                                                            "Active" ? (
-                                                                <CheckCircle
-                                                                    size={
-                                                                        14
-                                                                    }
-                                                                />
-                                                            ) : (
-                                                                <XCircle
-                                                                    size={
-                                                                        14
-                                                                    }
-                                                                />
-                                                            )}
-
-                                                            {
-                                                                status
-                                                            }
-
+                                                            <Activity size={16} />
                                                         </button>
 
-                                                    </td>
-
-                                                    {/* LAST LOGIN */}
-
-                                                    <td className="px-5 py-5 text-sm text-gray-600">
-
-                                                        {/*
-                                                         * The current users table has no
-                                                         * last_login column, so we do not
-                                                         * pretend that created_at or
-                                                         * updated_at is a login time.
-                                                         */}
-                                                        <span className="text-gray-400 italic">
-                                                            Not recorded
-                                                        </span>
-
-                                                    </td>
-
-                                                    {/* ACTION */}
-
-                                                    <td className="px-5 py-5">
-
-                                                        <div className="flex items-center justify-center gap-2">
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    openEditUser(
-                                                                        user
-                                                                    )
-                                                                }
-                                                                disabled={
-                                                                    !isAdmin
-                                                                }
-                                                                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                            >
-
-                                                                <Edit
-                                                                    size={
-                                                                        15
-                                                                    }
-                                                                />
-
-                                                                Edit
-
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    toggleStatus(
-                                                                        user
-                                                                    )
-                                                                }
-                                                                disabled={
-                                                                    !isAdmin ||
-                                                                    Number(
-                                                                        currentUser?.id
-                                                                    ) ===
-                                                                        Number(
-                                                                            user.id
-                                                                        )
-                                                                }
-                                                                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-yellow-50 text-yellow-700 hover:bg-yellow-100 font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                            >
-
-                                                                <KeyRound
-                                                                    size={
-                                                                        15
-                                                                    }
-                                                                />
-
-                                                                {status ===
-                                                                "Active"
-                                                                    ? "Deactivate"
-                                                                    : "Activate"}
-
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    handleDeleteUser(
-                                                                        user
-                                                                    )
-                                                                }
-                                                                disabled={
-                                                                    !isAdmin ||
-                                                                    Number(
-                                                                        currentUser?.id
-                                                                    ) ===
-                                                                        Number(
-                                                                            user.id
-                                                                        )
-                                                                }
-                                                                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                            >
-
-                                                                <Trash2
-                                                                    size={
-                                                                        15
-                                                                    }
-                                                                />
-
-                                                                Delete
-
-                                                            </button>
-
-                                                        </div>
-
-                                                    </td>
-
-                                                </tr>
-                                            );
-                                        }
-                                    )
-                                )}
-
-                            </tbody>
-
-                        </table>
-
-                    </div>
-
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteUser(user)}
+                                                            disabled={!isAdmin || isCurrentUser}
+                                                            title="Delete user"
+                                                            className="rounded-lg border border-red-200 p-2 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                        >
+                                                            <Trash2 size={16} />
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
                 </div>
 
-            </main>
+                <p className="text-xs leading-5 text-gray-500">
+                    Security note: role restrictions in this page improve the
+                    interface, but Laravel must also enforce authorization on
+                    the server for every user-management API request.
+                </p>
+            </div>
 
-            {/* =================================================
-                CREATE / EDIT USER MODAL
-            ================================================= */}
-
+            {/* Add / Edit User Modal */}
             {showUserModal && (
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                <Modal
+                    title={editingUser ? "Edit User Account" : "Add New User"}
+                    onClose={closeUserModal}
+                >
+                    <form onSubmit={handleSubmit} className="space-y-5">
+                        <Field label="Full Name">
+                            <input
+                                type="text"
+                                name="name"
+                                value={form.name}
+                                onChange={handleChange}
+                                autoComplete="name"
+                                required
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                placeholder="Enter full name"
+                            />
+                        </Field>
 
-                    <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
+                        <Field label="Email Address">
+                            <input
+                                type="email"
+                                name="email"
+                                value={form.email}
+                                onChange={handleChange}
+                                autoComplete="email"
+                                required
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                placeholder="name@example.com"
+                            />
+                        </Field>
 
-                        <div className="sticky top-0 z-10 bg-white border-b px-6 py-5 flex items-center justify-between">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            <Field label="System Role">
+                                <select
+                                    name="role"
+                                    value={form.role}
+                                    onChange={handleChange}
+                                    required
+                                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500"
+                                >
+                                    {ROLES.map((role) => (
+                                        <option key={role} value={role}>
+                                            {role}
+                                        </option>
+                                    ))}
+                                </select>
+                            </Field>
 
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    User Management
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55]">
-                                    {editingUser
-                                        ? "Edit User Account"
-                                        : "Create New User"}
-                                </h2>
-
-                            </div>
-
-                            <button
-                                type="button"
-                                onClick={
-                                    closeUserModal
-                                }
-                                disabled={saving}
-                                className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50"
-                            >
-
-                                <X
-                                    size={22}
-                                />
-
-                            </button>
-
+                            <Field label="Account Status">
+                                <select
+                                    name="status"
+                                    value={form.status}
+                                    onChange={handleChange}
+                                    required
+                                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500"
+                                >
+                                    {STATUSES.map((status) => (
+                                        <option key={status} value={status}>
+                                            {status}
+                                        </option>
+                                    ))}
+                                </select>
+                            </Field>
                         </div>
 
-                        <form
-                            onSubmit={
-                                handleSubmit
-                            }
-                            className="p-6 space-y-5"
-                        >
+                        <div className="rounded-lg bg-gray-50 p-4">
+                            <div className="mb-3 flex items-center gap-2">
+                                <KeyRound size={18} className="text-gray-500" />
+                                <p className="text-sm font-semibold text-gray-700">
+                                    {editingUser
+                                        ? "Change Password (Optional)"
+                                        : "Set Password"}
+                                </p>
+                            </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-
-                                <div className="md:col-span-2">
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Full Name
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        name="name"
-                                        value={
-                                            form.name
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="Enter full name"
-                                        required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                    />
-
-                                </div>
-
-                                <div className="md:col-span-2">
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Email Address
-                                    </label>
-
-                                    <input
-                                        type="email"
-                                        name="email"
-                                        value={
-                                            form.email
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="name@abra.edu"
-                                        required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                    />
-
-                                </div>
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        System Role
-                                    </label>
-
-                                    <select
-                                        name="role"
-                                        value={
-                                            form.role
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                    >
-
-                                        <option value="Cashier">
-                                            Cashier
-                                        </option>
-
-                                        <option value="System Administrator">
-                                            System Administrator
-                                        </option>
-
-                                    </select>
-
-                                </div>
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Account Status
-                                    </label>
-
-                                    <select
-                                        name="status"
-                                        value={
-                                            form.status
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                    >
-
-                                        <option value="Active">
-                                            Active
-                                        </option>
-
-                                        <option value="Inactive">
-                                            Inactive
-                                        </option>
-
-                                    </select>
-
-                                </div>
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        {editingUser
-                                            ? "New Password (Optional)"
-                                            : "Password"}
-                                    </label>
-
+                            <div className="space-y-4">
+                                <Field label="Password">
                                     <input
                                         type="password"
                                         name="password"
-                                        value={
-                                            form.password
+                                        value={form.password}
+                                        onChange={handleChange}
+                                        autoComplete="new-password"
+                                        minLength={8}
+                                        required={!editingUser}
+                                        className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500"
+                                        placeholder={
+                                            editingUser
+                                                ? "Leave blank to keep current password"
+                                                : "At least 8 characters"
                                         }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="At least 8 characters"
-                                        required={
-                                            !editingUser
-                                        }
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
+                                </Field>
 
-                                </div>
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Confirm Password
-                                    </label>
-
+                                <Field label="Confirm Password">
                                     <input
                                         type="password"
                                         name="password_confirmation"
-                                        value={
-                                            form.password_confirmation
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="Repeat password"
-                                        required={
-                                            !editingUser ||
-                                            Boolean(
-                                                form.password
-                                            )
-                                        }
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        value={form.password_confirmation}
+                                        onChange={handleChange}
+                                        autoComplete="new-password"
+                                        required={!editingUser && !form.password}
+                                        className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500"
+                                        placeholder="Re-enter password"
                                     />
-
-                                </div>
-
+                                </Field>
                             </div>
+                        </div>
 
-                            {editingUser && (
-                                <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800">
-                                    Leave the password fields empty if you only want to update the name, email, role, or status.
-                                </div>
-                            )}
-
-                            <div className="flex justify-end gap-3 pt-2">
-
-                                <button
-                                    type="button"
-                                    onClick={
-                                        closeUserModal
-                                    }
-                                    disabled={
-                                        saving
-                                    }
-                                    className="px-5 py-3 rounded-xl border border-gray-300 font-semibold hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                    Cancel
-                                </button>
-
-                                <button
-                                    type="submit"
-                                    disabled={
-                                        saving
-                                    }
-                                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white font-semibold disabled:opacity-50"
-                                >
-
-                                    {saving ? (
-                                        <RefreshCw
-                                            size={
-                                                18
-                                            }
-                                            className="animate-spin"
-                                        />
-                                    ) : (
-                                        <Save
-                                            size={
-                                                18
-                                            }
-                                        />
-                                    )}
-
-                                    {saving
-                                        ? "Saving..."
-                                        : editingUser
-                                        ? "Save Changes"
-                                        : "Create User"}
-
-                                </button>
-
-                            </div>
-
-                        </form>
-
-                    </div>
-
-                </div>
-            )}
-
-            {/* =================================================
-                ASSIGN ROLE MODAL
-            ================================================= */}
-
-            {showRoleModal && (
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-
-                    <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl">
-
-                        <div className="flex items-center justify-between p-6 border-b">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Management Tools
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55]">
-                                    Assign System Role
-                                </h2>
-
-                            </div>
-
+                        <div className="flex flex-col-reverse gap-3 border-t pt-4 sm:flex-row sm:justify-end">
                             <button
                                 type="button"
-                                onClick={() =>
-                                    setShowRoleModal(
-                                        false
-                                    )
-                                }
+                                onClick={closeUserModal}
                                 disabled={saving}
-                                className="p-2 rounded-lg hover:bg-gray-100"
+                                className="rounded-lg border border-gray-300 px-5 py-2.5 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                             >
-
-                                <X
-                                    size={22}
-                                />
-
+                                Cancel
                             </button>
 
+                            <button
+                                type="submit"
+                                disabled={saving}
+                                className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                {saving ? (
+                                    <RefreshCw size={17} className="animate-spin" />
+                                ) : (
+                                    <Save size={17} />
+                                )}
+
+                                {saving
+                                    ? "Saving..."
+                                    : editingUser
+                                      ? "Save Changes"
+                                      : "Create User"}
+                            </button>
                         </div>
-
-                        <div className="p-6 space-y-5">
-
-                            <div>
-
-                                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                    Select User
-                                </label>
-
-                                <select
-                                    value={
-                                        selectedRoleUserId
-                                    }
-                                    onChange={
-                                        handleRoleUserChange
-                                    }
-                                    className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                >
-
-                                    {users.map(
-                                        (
-                                            user
-                                        ) => (
-                                            <option
-                                                key={
-                                                    user.id
-                                                }
-                                                value={
-                                                    user.id
-                                                }
-                                            >
-                                                {
-                                                    user.name
-                                                } —{" "}
-                                                {
-                                                    user.email
-                                                }
-                                            </option>
-                                        )
-                                    )}
-
-                                </select>
-
-                            </div>
-
-                            <div>
-
-                                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                    System Role
-                                </label>
-
-                                <select
-                                    value={
-                                        selectedRole
-                                    }
-                                    onChange={(
-                                        event
-                                    ) =>
-                                        setSelectedRole(
-                                            event.target
-                                                .value
-                                        )
-                                    }
-                                    className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                >
-
-                                    <option value="Cashier">
-                                        Cashier
-                                    </option>
-
-                                    <option value="System Administrator">
-                                        System Administrator
-                                    </option>
-
-                                </select>
-
-                            </div>
-
-                            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-sm text-yellow-800">
-                                Changing a role changes the account's access level. The Laravel backend should also enforce the corresponding authorization rules.
-                            </div>
-
-                            <div className="flex justify-end gap-3">
-
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        setShowRoleModal(
-                                            false
-                                        )
-                                    }
-                                    className="px-5 py-3 rounded-xl border border-gray-300 font-semibold hover:bg-gray-50"
-                                >
-                                    Cancel
-                                </button>
-
-                                <button
-                                    type="button"
-                                    onClick={
-                                        saveAssignedRole
-                                    }
-                                    disabled={
-                                        saving ||
-                                        !selectedRoleUserId
-                                    }
-                                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white font-semibold disabled:opacity-50"
-                                >
-
-                                    {saving ? (
-                                        <RefreshCw
-                                            size={
-                                                18
-                                            }
-                                            className="animate-spin"
-                                        />
-                                    ) : (
-                                        <ShieldCheck
-                                            size={
-                                                18
-                                            }
-                                        />
-                                    )}
-
-                                    Save Role
-
-                                </button>
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                </div>
+                    </form>
+                </Modal>
             )}
 
-            {/* =================================================
-                AUDIT MODAL
-            ================================================= */}
+            {/* Role Assignment Modal */}
+            {showRoleModal && (
+                <Modal
+                    title="Assign System Role"
+                    onClose={() => !saving && setShowRoleModal(false)}
+                >
+                    <div className="space-y-5">
+                        <div className="rounded-lg bg-blue-50 p-4 text-sm text-blue-800">
+                            Select a user and assign the appropriate system
+                            role. Ensure that each account receives only the
+                            access it needs.
+                        </div>
 
-            {showAuditModal && (
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+                        <Field label="Select User">
+                            <select
+                                value={selectedRoleUserId}
+                                onChange={handleRoleUserChange}
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500"
+                            >
+                                <option value="">Choose a user</option>
 
-                    <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl">
+                                {users.map((user) => (
+                                    <option key={user.id} value={user.id}>
+                                        {user.name} — {user.email}
+                                    </option>
+                                ))}
+                            </select>
+                        </Field>
 
-                        <div className="flex items-center justify-between p-6 border-b">
+                        <Field label="Assigned Role">
+                            <select
+                                value={selectedRole}
+                                onChange={(event) =>
+                                    setSelectedRole(event.target.value)
+                                }
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2.5 outline-none focus:border-blue-500"
+                            >
+                                {ROLES.map((role) => (
+                                    <option key={role} value={role}>
+                                        {role}
+                                    </option>
+                                ))}
+                            </select>
+                        </Field>
 
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Security
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55]">
-                                    Audit System Access Logs
-                                </h2>
-
-                            </div>
+                        <div className="flex flex-col-reverse gap-3 border-t pt-4 sm:flex-row sm:justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setShowRoleModal(false)}
+                                disabled={saving}
+                                className="rounded-lg border border-gray-300 px-5 py-2.5 font-semibold text-gray-700 hover:bg-gray-50"
+                            >
+                                Cancel
+                            </button>
 
                             <button
                                 type="button"
-                                onClick={() =>
-                                    setShowAuditModal(
-                                        false
-                                    )
-                                }
-                                className="p-2 rounded-lg hover:bg-gray-100"
+                                onClick={saveAssignedRole}
+                                disabled={saving || !selectedRoleUserId}
+                                className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
                             >
-
-                                <X
-                                    size={22}
-                                />
-
+                                <ShieldCheck size={17} />
+                                {saving ? "Saving..." : "Save Role"}
                             </button>
-
                         </div>
-
-                        <div className="p-6 space-y-4">
-
-                            <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
-
-                                <div className="flex items-start gap-3">
-
-                                    <Activity
-                                        size={21}
-                                        className="text-blue-700 mt-0.5"
-                                    />
-
-                                    <div>
-
-                                        <p className="font-semibold text-blue-900">
-                                            Access-log storage status
-                                        </p>
-
-                                        <p className="text-sm text-blue-800 mt-1">
-                                            The current users table does not contain a dedicated last-login or access-log field. This page therefore does not invent login activity from created_at or updated_at.
-                                        </p>
-
-                                    </div>
-
-                                </div>
-
-                            </div>
-
-                            <div className="border border-gray-200 rounded-xl overflow-hidden">
-
-                                <div className="bg-[#eef4f8] px-4 py-3 font-bold text-gray-700">
-                                    Current Account Records
-                                </div>
-
-                                <div className="max-h-72 overflow-y-auto divide-y">
-
-                                    {users.length ===
-                                    0 ? (
-                                        <div className="p-6 text-center text-gray-500">
-                                            No user records available.
-                                        </div>
-                                    ) : (
-                                        users.map(
-                                            (
-                                                user
-                                            ) => (
-                                                <div
-                                                    key={
-                                                        user.id
-                                                    }
-                                                    className="px-4 py-4 flex items-center justify-between gap-4"
-                                                >
-
-                                                    <div>
-
-                                                        <p className="font-semibold text-gray-900">
-                                                            {
-                                                                user.name
-                                                            }
-                                                        </p>
-
-                                                        <p className="text-xs text-gray-500">
-                                                            {
-                                                                user.email
-                                                            }
-                                                        </p>
-
-                                                    </div>
-
-                                                    <div className="text-right">
-
-                                                        <p className="text-xs font-semibold text-gray-500">
-                                                            {
-                                                                user.role
-                                                            }
-                                                        </p>
-
-                                                        <p
-                                                            className={`text-xs font-bold ${
-                                                                String(
-                                                                    user.status ||
-                                                                        "Active"
-                                                                ) ===
-                                                                "Active"
-                                                                    ? "text-green-600"
-                                                                    : "text-red-600"
-                                                            }`}
-                                                        >
-                                                            {
-                                                                user.status
-                                                            }
-                                                        </p>
-
-                                                        <p className="text-xs text-gray-400 mt-1">
-                                                            Last login: Not recorded
-                                                        </p>
-
-                                                    </div>
-
-                                                </div>
-                                            )
-                                        )
-                                    )}
-
-                                </div>
-
-                            </div>
-
-                            <div className="flex justify-end">
-
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        setShowAuditModal(
-                                            false
-                                        )
-                                    }
-                                    className="px-5 py-3 rounded-xl border border-gray-300 font-semibold hover:bg-gray-50"
-                                >
-                                    Close
-                                </button>
-
-                            </div>
-
-                        </div>
-
                     </div>
-
-                </div>
+                </Modal>
             )}
 
+            {/* Basic account overview modal */}
+            {showAuditModal && (
+                <Modal
+                    title="Account Overview"
+                    onClose={() => setShowAuditModal(false)}
+                >
+                    <div className="space-y-4">
+                        <p className="text-sm text-gray-600">
+                            This overview shows the current account counts.
+                            It is not a server-side audit log.
+                        </p>
+
+                        <div className="rounded-lg border p-4">
+                            <p className="text-sm text-gray-500">Total accounts</p>
+                            <p className="text-2xl font-bold">{users.length}</p>
+                        </div>
+
+                        <div className="rounded-lg border p-4">
+                            <p className="text-sm text-gray-500">Active accounts</p>
+                            <p className="text-2xl font-bold text-green-700">
+                                {activeUsers}
+                            </p>
+                        </div>
+
+                        <div className="rounded-lg border p-4">
+                            <p className="text-sm text-gray-500">Inactive accounts</p>
+                            <p className="text-2xl font-bold text-red-700">
+                                {inactiveUsers}
+                            </p>
+                        </div>
+                    </div>
+                </Modal>
+            )}
         </div>
     );
 }

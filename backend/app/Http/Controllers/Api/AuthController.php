@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 class AuthController extends Controller
 {
     /**
-     * Login
+     * Log in a user.
      */
     public function login(Request $request)
     {
@@ -19,76 +19,49 @@ class AuthController extends Controller
             'email' => [
                 'required',
                 'email',
+                'max:255',
             ],
-
             'password' => [
                 'required',
                 'string',
             ],
         ]);
 
-        $user = User::where(
-            'email',
-            $validated['email']
-        )->first();
+        // Find the user by email address.
+        $user = User::where('email', $validated['email'])
+            ->first();
 
-        /*
-         * Check credentials.
-         */
+        // Reject incorrect credentials.
         if (
             !$user ||
-            !Hash::check(
-                $validated['password'],
-                $user->password
-            )
+            !Hash::check($validated['password'], $user->password)
         ) {
             throw ValidationException::withMessages([
                 'email' => [
-                    'The provided credentials are incorrect.'
+                    'The provided credentials are incorrect.',
                 ],
             ]);
         }
 
-        /*
-         * Only active accounts can log in.
-         */
-        if ($user->status !== 'Active') {
+        // Only active accounts may log in.
+        if (!$user->isActive()) {
             return response()->json([
-                'message' =>
-                    'Your account is inactive. Please contact the System Administrator.'
+                'message' => 'Your account is inactive. Please contact the System Administrator.',
             ], 403);
         }
 
-        /*
-         * Remove previous tokens.
-         */
-        $user->tokens()->delete();
-
-        /*
-         * Create fresh Sanctum token.
-         */
-        $token = $user->createToken(
-            'uniteq-web'
-        )->plainTextToken;
+        // Create a new Sanctum API token.
+        $token = $user->createToken('uniteq-web')->plainTextToken;
 
         return response()->json([
             'message' => 'Login successful.',
-
             'token' => $token,
-
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => $user->role,
-                'status' => $user->status,
-            ],
-        ]);
+            'user' => $this->userData($user),
+        ], 200);
     }
 
-
     /**
-     * Get authenticated user.
+     * Return the currently authenticated user's details.
      */
     public function me(Request $request)
     {
@@ -96,24 +69,26 @@ class AuthController extends Controller
 
         if (!$user) {
             return response()->json([
-                'message' => 'Unauthenticated.'
+                'message' => 'Unauthenticated.',
             ], 401);
         }
 
+        // Prevent inactive accounts from continuing to use the API.
+        if (!$user->isActive()) {
+            $user->currentAccessToken()?->delete();
+
+            return response()->json([
+                'message' => 'Your account is inactive. Please contact the System Administrator.',
+            ], 403);
+        }
+
         return response()->json([
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => $user->role,
-                'status' => $user->status,
-            ],
-        ]);
+            'user' => $this->userData($user),
+        ], 200);
     }
 
-
     /**
-     * Logout.
+     * Log out the current user by revoking the current token.
      */
     public function logout(Request $request)
     {
@@ -124,7 +99,23 @@ class AuthController extends Controller
         }
 
         return response()->json([
-            'message' => 'Logged out successfully.'
-        ]);
+            'message' => 'Logged out successfully.',
+        ], 200);
+    }
+
+    /**
+     * Return safe user details for the frontend.
+     *
+     * Never return passwords or authentication tokens here.
+     */
+    private function userData(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+            'status' => $user->status,
+        ];
     }
 }

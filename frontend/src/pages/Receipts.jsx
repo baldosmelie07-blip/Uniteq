@@ -1,2642 +1,1574 @@
-import { useEffect, useState } from "react";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
+import axios from "axios";
 import {
-    Receipt as ReceiptIcon,
     Search,
+    Plus,
     Eye,
+    Edit,
     X,
     RefreshCw,
-    Plus,
-    Pencil,
-    CheckCircle,
-    Clock,
-    AlertCircle,
-    CreditCard,
-    User,
-    CalendarDays,
-    FileText,
+    Receipt as ReceiptIcon,
     Wallet,
+    CalendarDays,
+    Printer,
+    Download,
+    User,
+    FileText,
+    CreditCard,
+    Hash,
+    CheckCircle,
+    AlertCircle,
 } from "lucide-react";
 
-import axios from "axios";
+const API = "http://127.0.0.1:8000/api";
 
+const EMPTY_FORM = {
+    date: new Date().toLocaleDateString("en-CA"),
+    collection_id: "",
+    collection_type: "",
+    purpose: "",
+    payer_name: "",
+    address_department: "",
+    description: "",
+    amount_due: "",
+    cash_received: "",
+    payment_method: "Cash",
+};
 
-const API_URL =
-    "http://127.0.0.1:8000/api";
+function getHeaders() {
+    const token =
+        localStorage.getItem("uniteq_token") ||
+        localStorage.getItem("token") ||
+        localStorage.getItem("access_token") ||
+        localStorage.getItem("auth_token") ||
+        sessionStorage.getItem("uniteq_token") ||
+        sessionStorage.getItem("token");
 
+    return {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+}
+
+function getResponseData(response) {
+    const data = response?.data;
+
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.receipts)) return data.receipts;
+    if (Array.isArray(data?.collections)) return data.collections;
+
+    return [];
+}
+
+function money(value) {
+    return new Intl.NumberFormat("en-PH", {
+        style: "currency",
+        currency: "PHP",
+    }).format(Number(value) || 0);
+}
+
+function numberValue(value) {
+    const result = Number(value);
+    return Number.isFinite(result) ? result : 0;
+}
+
+function dateToday() {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+}
+
+function displayDate(value) {
+    if (!value) return "—";
+
+    const date = new Date(`${String(value).substring(0, 10)}T00:00:00`);
+
+    if (Number.isNaN(date.getTime())) return "—";
+
+    return date.toLocaleDateString("en-PH", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+    });
+}
+
+function receiptNumber(receipt) {
+    return (
+        receipt?.receipt_number ||
+        receipt?.receipt_no ||
+        `OR-${String(receipt?.id || 0).padStart(4, "0")}`
+    );
+}
+
+function receiptAmountDue(receipt) {
+    return numberValue(
+        receipt?.amount_due ??
+            receipt?.original_amount ??
+            receipt?.amountDue ??
+            receipt?.amount ??
+            0
+    );
+}
+
+function receiptCashReceived(receipt) {
+    return numberValue(
+        receipt?.cash_received ??
+            receipt?.cashReceived ??
+            receipt?.amount_paid ??
+            receipt?.amountPaid ??
+            receipt?.amount ??
+            0
+    );
+}
+
+function receiptChange(receipt) {
+    const savedChange = receipt?.change_amount ?? receipt?.changeAmount;
+
+    if (savedChange !== undefined && savedChange !== null) {
+        return numberValue(savedChange);
+    }
+
+    return Math.max(receiptCashReceived(receipt) - receiptAmountDue(receipt), 0);
+}
+
+function getCollectionId(collection) {
+    return String(collection?.id ?? "");
+}
+
+function getCollectionName(collection) {
+    return (
+        collection?.name ||
+        collection?.collection_name ||
+        collection?.collection_type ||
+        collection?.purpose ||
+        collection?.title ||
+        ""
+    );
+}
+
+function getCollectionFee(collection) {
+    return numberValue(
+        collection?.fee ??
+            collection?.fixed_fee ??
+            collection?.amount_due ??
+            collection?.price ??
+            collection?.amount ??
+            0
+    );
+}
+
+function getCollectionNameFromReceipt(receipt) {
+    return (
+        receipt?.collection?.name ||
+        receipt?.collection?.collection_name ||
+        receipt?.collection_type ||
+        receipt?.collection_name ||
+        receipt?.purpose ||
+        "Unspecified collection"
+    );
+}
+
+function getErrorMessage(error, fallback) {
+    const data = error?.response?.data;
+
+    if (data?.errors) {
+        return Object.values(data.errors).flat().join("\n");
+    }
+
+    return data?.message || error?.message || fallback;
+}
+
+function printableReceipt(receipt) {
+    const due = receiptAmountDue(receipt);
+    const received = receiptCashReceived(receipt);
+    const change = receiptChange(receipt);
+
+    const escapeHtml = (value) =>
+        String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+
+    const rows = [
+        ["Receipt Number", receiptNumber(receipt)],
+        ["Date", displayDate(receipt.date)],
+        ["Payer", receipt.payer_name || "—"],
+        ["Address / Department", receipt.address_department || "—"],
+        ["Collection", getCollectionNameFromReceipt(receipt)],
+        ["Purpose", receipt.purpose || "—"],
+        ["Payment Method", receipt.payment_method || "Cash"],
+    ];
+
+    const details = rows
+        .map(
+            ([label, value]) => `
+                <div class="detail">
+                    <span>${escapeHtml(label)}</span>
+                    <strong>${escapeHtml(value)}</strong>
+                </div>
+            `
+        )
+        .join("");
+
+    const description = receipt.description
+        ? `<p class="description">${escapeHtml(receipt.description)}</p>`
+        : "";
+
+    return `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Official Receipt ${escapeHtml(receiptNumber(receipt))}</title>
+            <style>
+                * { box-sizing: border-box; }
+                body {
+                    font-family: Arial, Helvetica, sans-serif;
+                    color: #172033;
+                    margin: 0;
+                    padding: 28px;
+                    background: #fff;
+                }
+                .receipt {
+                    max-width: 720px;
+                    margin: 0 auto;
+                    border: 1px solid #d7dee8;
+                    padding: 30px;
+                }
+                .header {
+                    text-align: center;
+                    border-bottom: 2px solid #102d55;
+                    padding-bottom: 20px;
+                    margin-bottom: 22px;
+                }
+                .header h1 {
+                    color: #102d55;
+                    font-size: 22px;
+                    margin: 0 0 7px;
+                }
+                .header p {
+                    font-size: 12px;
+                    margin: 4px 0;
+                    color: #526071;
+                }
+                .header h2 {
+                    font-size: 17px;
+                    margin: 18px 0 0;
+                    letter-spacing: 2px;
+                }
+                .receipt-number {
+                    text-align: right;
+                    color: #102d55;
+                    font-weight: bold;
+                    margin-bottom: 20px;
+                }
+                .details {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 15px 25px;
+                }
+                .detail {
+                    border-bottom: 1px solid #e5e7eb;
+                    padding: 8px 0;
+                    min-width: 0;
+                }
+                .detail span {
+                    display: block;
+                    font-size: 11px;
+                    color: #667085;
+                    margin-bottom: 5px;
+                }
+                .detail strong {
+                    display: block;
+                    font-size: 13px;
+                    overflow-wrap: anywhere;
+                }
+                .amounts {
+                    margin-top: 25px;
+                    border: 1px solid #d7dee8;
+                    padding: 18px;
+                }
+                .amount-row {
+                    display: flex;
+                    justify-content: space-between;
+                    gap: 15px;
+                    padding: 7px 0;
+                    font-size: 13px;
+                }
+                .amount-row.total {
+                    border-top: 1px solid #d7dee8;
+                    margin-top: 8px;
+                    padding-top: 14px;
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: #102d55;
+                }
+                .description {
+                    white-space: pre-wrap;
+                    overflow-wrap: anywhere;
+                    font-size: 12px;
+                    margin-top: 20px;
+                }
+                .footer {
+                    text-align: center;
+                    color: #667085;
+                    font-size: 11px;
+                    margin-top: 32px;
+                    border-top: 1px dashed #cbd5e1;
+                    padding-top: 16px;
+                }
+                .signatures {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 40px;
+                    margin-top: 45px;
+                    text-align: center;
+                    font-size: 11px;
+                }
+                .signature-line {
+                    border-top: 1px solid #344054;
+                    padding-top: 8px;
+                }
+                @media print {
+                    body { padding: 0; }
+                    .receipt {
+                        border: none;
+                        max-width: none;
+                        padding: 10px;
+                    }
+                    @page { margin: 12mm; }
+                }
+            </style>
+        </head>
+        <body>
+            <main class="receipt">
+                <header class="header">
+                    <h1>UNIVERSITY OF ABRA</h1>
+                    <p>Main Campus</p>
+                    <p>Cashier's Unit</p>
+                    <h2>PAYMENT RECEIPT</h2>
+                </header>
+
+                <div class="receipt-number">
+                    Receipt No.: ${escapeHtml(receiptNumber(receipt))}
+                </div>
+
+                <section class="details">${details}</section>
+
+                <section class="amounts">
+                    <div class="amount-row">
+                        <span>Amount Due</span>
+                        <strong>${escapeHtml(money(due))}</strong>
+                    </div>
+                    <div class="amount-row">
+                        <span>Cash Received</span>
+                        <strong>${escapeHtml(money(received))}</strong>
+                    </div>
+                    <div class="amount-row total">
+                        <span>Change</span>
+                        <strong>${escapeHtml(money(change))}</strong>
+                    </div>
+                </section>
+
+                ${description}
+
+                <div class="signatures">
+                    <div class="signature-line">Cashier / Authorized Personnel</div>
+                    <div class="signature-line">Payer's Signature</div>
+                </div>
+
+                <footer class="footer">
+                    This receipt was generated by UniTeq.
+                    Please keep it for your records.
+                </footer>
+            </main>
+            <script>
+                window.onload = function () {
+                    window.focus();
+                    window.print();
+                };
+            </script>
+        </body>
+        </html>
+    `;
+}
+
+function printReceipt(receipt) {
+    const printWindow = window.open("", "_blank", "width=850,height=750");
+
+    if (!printWindow) {
+        alert("The print window was blocked. Allow pop-ups for this site and try again.");
+        return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(printableReceipt(receipt));
+    printWindow.document.close();
+}
 
 export default function Receipts() {
+    const [receipts, setReceipts] = useState([]);
+    const [collections, setCollections] = useState([]);
 
-    const [receipts, setReceipts] =
-        useState([]);
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [search, setSearch] = useState("");
 
-    const [loading, setLoading] =
-        useState(true);
+    const [showForm, setShowForm] = useState(false);
+    const [editingReceipt, setEditingReceipt] = useState(null);
+    const [selectedReceipt, setSelectedReceipt] = useState(null);
 
-    const [saving, setSaving] =
-        useState(false);
+    const [form, setForm] = useState({ ...EMPTY_FORM });
 
-    const [search, setSearch] =
-        useState("");
-
-    const [selectedReceipt, setSelectedReceipt] =
-        useState(null);
-
-    const [showModal, setShowModal] =
-        useState(false);
-
-    const [editingReceipt, setEditingReceipt] =
-        useState(null);
-
-
-    const [form, setForm] = useState({
-        date: "",
-        payer_name: "",
-        purpose: "",
-        amount_due: "",
-        amount_paid: "0",
-        payment_method: "Cash",
-        address_department: "",
-        description: "",
+    const [currentUser, setCurrentUser] = useState(() => {
+        try {
+            return JSON.parse(
+                localStorage.getItem("uniteq_user") ||
+                    localStorage.getItem("user") ||
+                    localStorage.getItem("auth_user") ||
+                    localStorage.getItem("currentUser") ||
+                    "null"
+            );
+        } catch {
+            return null;
+        }
     });
 
+    const role = String(currentUser?.role || "").toLowerCase();
 
-    /* =====================================================
-       AUTHORIZATION
-    ===================================================== */
+    const canManageReceipts =
+        role === "cashier" ||
+        role === "system administrator" ||
+        role === "system_administrator" ||
+        role === "admin" ||
+        role === "administrator";
 
-    function getToken() {
+    const activeCollections = useMemo(
+        () =>
+            collections.filter(
+                (collection) =>
+                    collection.is_active !== false &&
+                    collection.active !== false &&
+                    collection.status !== "inactive"
+            ),
+        [collections]
+    );
 
-        return localStorage.getItem(
-            "uniteq_token"
-        );
-    }
+    const selectedFormCollection = useMemo(
+        () =>
+            activeCollections.find(
+                (collection) =>
+                    getCollectionId(collection) === String(form.collection_id)
+            ) || null,
+        [activeCollections, form.collection_id]
+    );
 
+    const amountDue = numberValue(form.amount_due);
+    const cashReceived = numberValue(form.cash_received);
+    const changeAmount = Math.max(cashReceived - amountDue, 0);
+    const amountShort = Math.max(amountDue - cashReceived, 0);
 
-    function getHeaders() {
+    const loadReceipts = useCallback(async () => {
+        const response = await axios.get(`${API}/receipts`, {
+            headers: getHeaders(),
+        });
 
-        const token =
-            getToken();
-
-        return {
-            Accept:
-                "application/json",
-
-            "Content-Type":
-                "application/json",
-
-            ...(token
-                ? {
-                      Authorization:
-                          `Bearer ${token}`,
-                  }
-                : {}),
-        };
-    }
-
-
-    /* =====================================================
-       LOAD RECEIPTS
-    ===================================================== */
-
-    useEffect(() => {
-        loadReceipts();
+        setReceipts(getResponseData(response));
     }, []);
 
+    const loadCollections = useCallback(async () => {
+        const response = await axios.get(`${API}/collections`, {
+            headers: getHeaders(),
+        });
 
-    async function loadReceipts() {
+        setCollections(getResponseData(response));
+    }, []);
+
+    const loadPage = useCallback(async () => {
+        setLoading(true);
 
         try {
+            const results = await Promise.allSettled([
+                loadReceipts(),
+                loadCollections(),
+            ]);
 
-            setLoading(true);
+            const receiptResult = results[0];
+            const collectionResult = results[1];
 
-            const response =
-                await axios.get(
-                    `${API_URL}/receipts`,
-                    {
-                        headers:
-                            getHeaders(),
-                    }
-                );
-
-
-            const data =
-                Array.isArray(
-                    response.data
-                )
-                    ? response.data
-                    : response.data?.data ||
-                      [];
-
-
-            setReceipts(data);
-
-        } catch (error) {
-
-            console.error(
-                "Error loading receipts:",
-                error
-            );
-
-
-            if (
-                error.response?.status ===
-                401
-            ) {
-
-                alert(
-                    "Your session has expired. Please log in again."
-                );
-
-            } else {
-
-                alert(
-                    "Unable to load official receipt records."
-                );
+            if (receiptResult.status === "rejected") {
+                throw receiptResult.reason;
             }
 
+            if (collectionResult.status === "rejected") {
+                console.error(
+                    "Could not load registered collections:",
+                    collectionResult.reason?.response?.data ||
+                        collectionResult.reason
+                );
 
-            setReceipts([]);
+                alert(
+                    "Receipts loaded, but registered collections could not be loaded. Check that GET /api/collections is configured in Laravel."
+                );
+            }
+        } catch (error) {
+            console.error(
+                "Unable to load receipts:",
+                error?.response?.data || error
+            );
 
+            if (error?.response?.status === 401) {
+                alert("Your session has expired. Please log in again.");
+            } else if (error?.response?.status === 403) {
+                alert("Your account is not authorized to view receipts.");
+            } else {
+                alert(
+                    getErrorMessage(
+                        error,
+                        "Unable to load receipts. Check whether Laravel is running."
+                    )
+                );
+            }
         } finally {
-
             setLoading(false);
         }
-    }
+    }, [loadReceipts, loadCollections]);
 
+    useEffect(() => {
+        loadPage();
+    }, [loadPage]);
 
-    /* =====================================================
-       HELPERS
-    ===================================================== */
+    useEffect(() => {
+        async function loadAuthenticatedUser() {
+            try {
+                const response = await axios.get(`${API}/me`, {
+                    headers: getHeaders(),
+                });
 
-    function getReceiptNumber(
-        receipt
-    ) {
+                const user = response.data?.user || response.data;
 
-        return (
-            receipt.receipt_number ||
-            receipt.receipt_no ||
-            `OR-${String(
-                receipt.id
-            ).padStart(4, "0")}`
-        );
-    }
-
-
-    function getPayer(
-        receipt
-    ) {
-
-        return (
-            receipt.payer_name ||
-            "—"
-        );
-    }
-
-
-    function getPurpose(
-        receipt
-    ) {
-
-        return (
-            receipt.purpose ||
-            "—"
-        );
-    }
-
-
-    /*
-     * DATABASE:
-     *
-     * original_amount = Amount Due
-     * amount = Amount Paid
-     */
-    function getAmountDue(
-        receipt
-    ) {
-
-        return Number(
-            receipt.original_amount ??
-            receipt.amount_due ??
-            0
-        );
-    }
-
-
-    function getAmountPaid(
-        receipt
-    ) {
-
-        return Number(
-            receipt.amount ??
-            receipt.amount_paid ??
-            0
-        );
-    }
-
-
-    function getRemainingBalance(
-        receipt
-    ) {
-
-        const databaseBalance =
-            receipt.remaining_balance;
-
-
-        if (
-            databaseBalance !==
-            undefined &&
-            databaseBalance !== null
-        ) {
-
-            return Math.max(
-                Number(
-                    databaseBalance
-                ),
-                0
-            );
-        }
-
-
-        return Math.max(
-            getAmountDue(
-                receipt
-            ) -
-                getAmountPaid(
-                    receipt
-                ),
-            0
-        );
-    }
-
-
-    /*
-     * STATUS IS AUTOMATIC.
-     *
-     * We do not trust an old
-     * status field in the database.
-     */
-    function getStatus(
-        receipt
-    ) {
-
-        const due =
-            getAmountDue(
-                receipt
-            );
-
-        const paid =
-            getAmountPaid(
-                receipt
-            );
-
-
-        if (
-            due > 0 &&
-            paid >= due
-        ) {
-
-            return "Paid";
-        }
-
-
-        if (
-            paid > 0 &&
-            paid < due
-        ) {
-
-            return "Partially Paid";
-        }
-
-
-        return "Unpaid";
-    }
-
-
-    function formatCurrency(
-        amount
-    ) {
-
-        return new Intl.NumberFormat(
-            "en-PH",
-            {
-                style:
-                    "currency",
-
-                currency:
-                    "PHP",
+                if (user && typeof user === "object") {
+                    setCurrentUser(user);
+                    localStorage.setItem("uniteq_user", JSON.stringify(user));
+                }
+            } catch {
+                // Keep the locally stored user if /me is not available.
             }
-        ).format(
-            Number(amount) || 0
-        );
-    }
-
-
-    function formatDate(
-        value
-    ) {
-
-        if (!value) {
-            return "—";
         }
 
+        loadAuthenticatedUser();
+    }, []);
 
-        const date =
-            new Date(value);
-
-
-        if (
-            Number.isNaN(
-                date.getTime()
-            )
-        ) {
-
-            return "—";
-        }
-
-
-        return date.toLocaleDateString(
-            "en-PH",
-            {
-                year:
-                    "numeric",
-
-                month:
-                    "short",
-
-                day:
-                    "numeric",
-            }
-        );
-    }
-
-
-    function getStatusStyle(
-        status
-    ) {
-
-        if (
-            status === "Paid"
-        ) {
-
-            return (
-                "bg-green-100 text-green-700"
-            );
-        }
-
-
-        if (
-            status ===
-            "Partially Paid"
-        ) {
-
-            return (
-                "bg-yellow-100 text-yellow-700"
-            );
-        }
-
-
-        return (
-            "bg-red-100 text-red-700"
-        );
-    }
-
-
-    function getStatusIcon(
-        status
-    ) {
-
-        if (
-            status === "Paid"
-        ) {
-
-            return (
-                <CheckCircle
-                    size={15}
-                />
-            );
-        }
-
-
-        if (
-            status ===
-            "Partially Paid"
-        ) {
-
-            return (
-                <Clock
-                    size={15}
-                />
-            );
-        }
-
-
-        return (
-            <AlertCircle
-                size={15}
-            />
-        );
-    }
-
-
-    /* =====================================================
-       SORT
-    ===================================================== */
-
-    const sortedReceipts =
-        [...receipts].sort(
-            (a, b) => {
-
-                const numberA =
-                    Number(
-                        String(
-                            getReceiptNumber(
-                                a
-                            )
-                        ).match(
-                            /\d+$/
-                        )?.[0] || 0
-                    );
-
-
-                const numberB =
-                    Number(
-                        String(
-                            getReceiptNumber(
-                                b
-                            )
-                        ).match(
-                            /\d+$/
-                        )?.[0] || 0
-                    );
-
-
-                return (
-                    numberB -
-                    numberA
-                );
-            }
-        );
-
-
-    /* =====================================================
-       SEARCH
-    ===================================================== */
-
-    const filteredReceipts =
-        sortedReceipts.filter(
-            (receipt) => {
-
-                const searchText = `
-                    ${getReceiptNumber(
-                        receipt
-                    )}
-
-                    ${getPayer(
-                        receipt
-                    )}
-
-                    ${getPurpose(
-                        receipt
-                    )}
-
-                    ${
-                        receipt.description ||
-                        ""
-                    }
-
-                    ${
-                        receipt.payment_method ||
-                        ""
-                    }
-
-                    ${getStatus(
-                        receipt
-                    )}
-                `.toLowerCase();
-
-
-                return searchText.includes(
-                    search.toLowerCase()
-                );
-            }
-        );
-
-
-    /* =====================================================
-       ADD RECEIPT
-    ===================================================== */
-
-    function openAddModal() {
-
-        setEditingReceipt(
-            null
-        );
-
-
+    function resetForm() {
         setForm({
-            date:
-                new Date()
-                    .toISOString()
-                    .split("T")[0],
+            ...EMPTY_FORM,
+            date: dateToday(),
+        });
+        setEditingReceipt(null);
+    }
 
-            payer_name:
-                "",
+    function openAddForm() {
+        resetForm();
+        setShowForm(true);
+    }
 
-            purpose:
-                "",
+    function openEditForm(receipt) {
+        const linkedCollectionId =
+            receipt.collection_id ??
+            receipt.collection?.id ??
+            "";
 
-            amount_due:
-                "",
+        const linkedCollection =
+            collections.find(
+                (collection) =>
+                    getCollectionId(collection) === String(linkedCollectionId)
+            ) || null;
 
-            amount_paid:
-                "0",
-
-            payment_method:
-                "Cash",
-
-            address_department:
-                "",
-
-            description:
-                "",
+        setEditingReceipt(receipt);
+        setForm({
+            date: String(receipt.date || dateToday()).substring(0, 10),
+            collection_id: linkedCollectionId ? String(linkedCollectionId) : "",
+            collection_type:
+                receipt.collection_type ||
+                getCollectionNameFromReceipt(receipt),
+            purpose: receipt.purpose || "",
+            payer_name: receipt.payer_name || "",
+            address_department: receipt.address_department || "",
+            description: receipt.description || "",
+            amount_due: String(
+                receiptAmountDue(receipt) ||
+                    (linkedCollection ? getCollectionFee(linkedCollection) : "")
+            ),
+            cash_received: String(receiptCashReceived(receipt)),
+            payment_method: receipt.payment_method || "Cash",
         });
 
-
-        setShowModal(
-            true
-        );
+        setShowForm(true);
     }
 
+    function handleFormChange(event) {
+        const { name, value } = event.target;
 
-    /* =====================================================
-       EDIT RECEIPT
-    ===================================================== */
+        if (name === "collection_id") {
+            const collection = activeCollections.find(
+                (item) => getCollectionId(item) === String(value)
+            );
 
-    function openEditModal(
-        receipt
-    ) {
-
-        setEditingReceipt(
-            receipt
-        );
-
-
-        setForm({
-            date:
-                receipt.date
-                    ? String(
-                          receipt.date
-                      ).substring(
-                          0,
-                          10
-                      )
-                    : new Date()
-                          .toISOString()
-                          .split(
-                              "T"
-                          )[0],
-
-            payer_name:
-                receipt.payer_name ||
-                "",
-
-            purpose:
-                receipt.purpose ||
-                "",
-
-            amount_due:
-                receipt.original_amount ??
-                receipt.amount_due ??
-                receipt.amount ??
-                "",
-
-            amount_paid:
-                receipt.amount ??
-                receipt.amount_paid ??
-                "0",
-
-            payment_method:
-                receipt.payment_method ||
-                "Cash",
-
-            address_department:
-                receipt.address_department ||
-                "",
-
-            description:
-                receipt.description ||
-                "",
-        });
-
-
-        setShowModal(
-            true
-        );
-    }
-
-
-    /* =====================================================
-       FORM CHANGE
-    ===================================================== */
-
-    function handleChange(
-        e
-    ) {
-
-        const {
-            name,
-            value,
-        } = e.target;
-
-
-        setForm(
-            (previous) => ({
+            setForm((previous) => ({
                 ...previous,
-                [name]:
-                    value,
-            })
-        );
+                collection_id: value,
+                collection_type: collection ? getCollectionName(collection) : "",
+                purpose: collection ? getCollectionName(collection) : "",
+                amount_due: collection
+                    ? String(getCollectionFee(collection))
+                    : "",
+            }));
+
+            return;
+        }
+
+        setForm((previous) => ({
+            ...previous,
+            [name]: value,
+        }));
     }
 
+    function validateForm() {
+        if (!form.date) {
+            alert("Please select the receipt date.");
+            return false;
+        }
 
-    /* =====================================================
-       SAVE
-    ===================================================== */
+        if (!form.collection_id) {
+            alert("Please select a registered collection.");
+            return false;
+        }
 
-    async function handleSubmit(
-        e
-    ) {
+        if (!selectedFormCollection) {
+            alert("The selected collection is no longer available. Refresh the page and try again.");
+            return false;
+        }
 
-        e.preventDefault();
+        if (!form.payer_name.trim()) {
+            alert("Please enter the payer's name.");
+            return false;
+        }
 
+        if (amountDue <= 0) {
+            alert("The registered collection must have a fee greater than zero.");
+            return false;
+        }
 
-        const amountDue =
-            Number(
-                form.amount_due
-            );
-
-
-        const amountPaid =
-            Number(
-                form.amount_paid || 0
-            );
-
-
-        if (
-            !form.payer_name.trim()
-        ) {
-
+        if (cashReceived < amountDue) {
             alert(
-                "Please enter the payer name."
+                `The amount received is not enough. The fee is ${money(amountDue)}. The payer still owes ${money(amountShort)}.`
             );
+            return false;
+        }
 
+        if (!form.payment_method) {
+            alert("Please select a payment method.");
+            return false;
+        }
+
+        return true;
+    }
+
+    async function handleSave(event) {
+        event.preventDefault();
+
+        if (!canManageReceipts) {
+            alert("Your account does not have permission to create or edit receipts.");
             return;
         }
 
+        if (!validateForm()) return;
 
-        if (
-            !form.purpose.trim()
-        ) {
+        const selectedCollection = selectedFormCollection;
+        const fee = getCollectionFee(selectedCollection);
+        const received = numberValue(form.cash_received);
+        const change = Math.max(received - fee, 0);
 
-            alert(
-                "Please enter the fee type or purpose."
-            );
+        /*
+         * amount_paid is the amount applied to the fee, not the cash handed
+         * over by the payer. cash_received and change_amount are separate.
+         *
+         * The Laravel ReceiptController and database migration must support
+         * cash_received, change_amount, and collection_id.
+         */
+        const payload = {
+            date: form.date,
+            collection_id: Number(form.collection_id),
+            collection_type: getCollectionName(selectedCollection),
+            purpose: getCollectionName(selectedCollection),
+            payer_name: form.payer_name.trim(),
+            address_department: form.address_department.trim() || null,
+            description: form.description.trim() || null,
 
-            return;
-        }
+            amount_due: fee,
+            original_amount: fee,
 
+            // Amount applied to the fee.
+            amount_paid: fee,
+            amount: fee,
+            amount_collected: fee,
 
-        if (
-            form.amount_due ===
-                "" ||
-            Number.isNaN(
-                amountDue
-            ) ||
-            amountDue < 0
-        ) {
+            // Actual money handed over and returned as change.
+            cash_received: received,
+            change_amount: change,
 
-            alert(
-                "Please enter a valid amount due."
-            );
-
-            return;
-        }
-
-
-        if (
-            Number.isNaN(
-                amountPaid
-            ) ||
-            amountPaid < 0
-        ) {
-
-            alert(
-                "Please enter a valid amount paid."
-            );
-
-            return;
-        }
-
-
-        if (
-            amountPaid >
-            amountDue
-        ) {
-
-            alert(
-                "Amount paid cannot be greater than the amount due."
-            );
-
-            return;
-        }
-
+            payment_method: form.payment_method,
+        };
 
         try {
+            setSaving(true);
 
-            setSaving(
-                true
-            );
-
-
-            /*
-             * IMPORTANT:
-             *
-             * Send BOTH frontend-friendly
-             * and database-compatible names.
-             *
-             * Laravel will use:
-             *
-             * amount_due
-             * amount_paid
-             */
-            const payload = {
-
-                date:
-                    form.date,
-
-                payer_name:
-                    form.payer_name.trim(),
-
-                purpose:
-                    form.purpose.trim(),
-
-                amount_due:
-                    amountDue,
-
-                amount_paid:
-                    amountPaid,
-
-                payment_method:
-                    form.payment_method,
-
-                address_department:
-                    form.address_department.trim(),
-
-                description:
-                    form.description.trim(),
-            };
-
-
-            if (
-                editingReceipt
-            ) {
-
+            if (editingReceipt?.id) {
                 await axios.put(
-                    `${API_URL}/receipts/${editingReceipt.id}`,
+                    `${API}/receipts/${editingReceipt.id}`,
                     payload,
-                    {
-                        headers:
-                            getHeaders(),
-                    }
+                    { headers: getHeaders() }
                 );
-
-                alert(
-                    "Receipt updated successfully."
-                );
-
             } else {
-
-                await axios.post(
-                    `${API_URL}/receipts`,
-                    payload,
-                    {
-                        headers:
-                            getHeaders(),
-                    }
-                );
-
-                alert(
-                    "Receipt created successfully."
-                );
+                await axios.post(`${API}/receipts`, payload, {
+                    headers: getHeaders(),
+                });
             }
 
-
-            setShowModal(
-                false
+            alert(
+                editingReceipt
+                    ? "Receipt updated successfully."
+                    : "Receipt saved successfully."
             );
 
-            setEditingReceipt(
-                null
-            );
-
+            setShowForm(false);
+            resetForm();
 
             await loadReceipts();
-
         } catch (error) {
-
             console.error(
-                "Error saving receipt:",
-                error
+                "Receipt save error:",
+                error?.response?.data || error
             );
 
-
-            console.error(
-                "Server response:",
-                error.response?.data
-            );
-
-
-            if (
-                error.response?.status ===
-                422
-            ) {
-
-                const errors =
-                    error.response
-                        ?.data
-                        ?.errors;
-
-
-                if (errors) {
-
-                    const firstError =
-                        Object.values(
-                            errors
-                        )
-                            .flat()[0];
-
-
-                    alert(
-                        firstError
-                    );
-
-                } else {
-
-                    alert(
-                        error.response
-                            ?.data
-                            ?.message ||
-                            "Please check the information entered."
-                    );
-                }
-
-            } else if (
-                error.response?.status ===
-                401
-            ) {
-
+            if (error?.response?.status === 422) {
                 alert(
-                    "Your session has expired. Please log in again."
+                    getErrorMessage(
+                        error,
+                        "Please check the receipt details."
+                    )
                 );
-
-            } else if (
-                error.response?.status ===
-                403
-            ) {
-
+            } else if (error?.response?.status === 401) {
+                alert("Your session has expired. Please log in again.");
+            } else if (error?.response?.status === 403) {
+                alert("You are not authorized to save receipts.");
+            } else if (error?.response?.status === 404) {
                 alert(
-                    "You are not authorized to manage receipts."
+                    "The receipt or selected collection could not be found."
                 );
-
             } else {
-
                 alert(
-                    "Unable to save the receipt."
+                    getErrorMessage(
+                        error,
+                        "Could not save the receipt. Check the Laravel backend and database migration."
+                    )
                 );
             }
-
         } finally {
-
-            setSaving(
-                false
-            );
+            setSaving(false);
         }
     }
 
+    const filteredReceipts = useMemo(() => {
+        const query = search.trim().toLowerCase();
 
-    /* =====================================================
-       MARK AS PAID
-    ===================================================== */
+        return [...receipts]
+            .filter((receipt) => {
+                const searchableText = [
+                    receiptNumber(receipt),
+                    receipt.payer_name,
+                    receipt.purpose,
+                    receipt.collection_type,
+                    receipt.collection_name,
+                    getCollectionNameFromReceipt(receipt),
+                    receipt.address_department,
+                    receipt.payment_method,
+                    receipt.description,
+                ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase();
 
-    async function markAsPaid(
-        receipt
-    ) {
+                return searchableText.includes(query);
+            })
+            .sort((a, b) => {
+                const dateA = String(a.date || "");
+                const dateB = String(b.date || "");
 
-        const due =
-            getAmountDue(
-                receipt
-            );
-
-
-        if (due <= 0) {
-
-            alert(
-                "This receipt has no amount due."
-            );
-
-            return;
-        }
-
-
-        const currentStatus =
-            getStatus(
-                receipt
-            );
-
-
-        if (
-            currentStatus ===
-            "Paid"
-        ) {
-
-            alert(
-                "This receipt is already paid."
-            );
-
-            return;
-        }
-
-
-        const confirmed =
-            window.confirm(
-                `Mark ${getReceiptNumber(
-                    receipt
-                )} as fully paid?\n\nAmount Due: ${formatCurrency(
-                    due
-                )}\nCurrent Paid: ${formatCurrency(
-                    getAmountPaid(
-                        receipt
-                    )
-                )}`
-            );
-
-
-        if (!confirmed) {
-            return;
-        }
-
-
-        try {
-
-            setSaving(
-                true
-            );
-
-
-            /*
-             * We use the UPDATE endpoint.
-             *
-             * This sends the complete receipt,
-             * so Laravel always receives
-             * amount_due and amount_paid.
-             */
-            const payload = {
-
-                date:
-                    receipt.date
-                        ? String(
-                              receipt.date
-                          ).substring(
-                              0,
-                              10
-                          )
-                        : new Date()
-                              .toISOString()
-                              .split(
-                                  "T"
-                              )[0],
-
-                payer_name:
-                    receipt.payer_name ||
-                    "",
-
-                purpose:
-                    receipt.purpose ||
-                    "",
-
-                amount_due:
-                    due,
-
-                amount_paid:
-                    due,
-
-                payment_method:
-                    receipt.payment_method ||
-                    "Cash",
-
-                address_department:
-                    receipt.address_department ||
-                    "",
-
-                description:
-                    receipt.description ||
-                    "",
-            };
-
-
-            await axios.put(
-                `${API_URL}/receipts/${receipt.id}`,
-                payload,
-                {
-                    headers:
-                        getHeaders(),
+                if (dateA !== dateB) {
+                    return dateB.localeCompare(dateA);
                 }
-            );
 
+                return numberValue(b.id) - numberValue(a.id);
+            });
+    }, [receipts, search]);
 
-            alert(
-                "Receipt marked as Paid successfully."
-            );
+    const totalCollected = receipts.reduce(
+        (total, receipt) => total + receiptAmountDue(receipt),
+        0
+    );
 
-
-            await loadReceipts();
-
-
-            /*
-             * Refresh the selected
-             * receipt if it was open.
-             */
-            setSelectedReceipt(
-                null
-            );
-
-        } catch (error) {
-
-            console.error(
-                "Error marking receipt as paid:",
-                error
-            );
-
-
-            const errors =
-                error.response
-                    ?.data
-                    ?.errors;
-
-
-            if (errors) {
-
-                const firstError =
-                    Object.values(
-                        errors
-                    )
-                        .flat()[0];
-
-
-                alert(
-                    firstError
-                );
-
-            } else {
-
-                alert(
-                    error.response
-                        ?.data
-                        ?.message ||
-                    "Unable to mark receipt as paid."
-                );
-            }
-
-        } finally {
-
-            setSaving(
-                false
-            );
+    const todayCollected = receipts.reduce((total, receipt) => {
+        if (String(receipt.date || "").substring(0, 10) === dateToday()) {
+            return total + receiptAmountDue(receipt);
         }
+
+        return total;
+    }, 0);
+
+    function exportCsv() {
+        if (!filteredReceipts.length) {
+            alert("There are no receipts to export.");
+            return;
+        }
+
+        const headers = [
+            "Receipt Number",
+            "Date",
+            "Payer Name",
+            "Collection",
+            "Purpose",
+            "Amount Due",
+            "Cash Received",
+            "Change",
+            "Payment Method",
+        ];
+
+        const rows = filteredReceipts.map((receipt) => [
+            receiptNumber(receipt),
+            String(receipt.date || "").substring(0, 10),
+            receipt.payer_name || "",
+            getCollectionNameFromReceipt(receipt),
+            receipt.purpose || "",
+            receiptAmountDue(receipt).toFixed(2),
+            receiptCashReceived(receipt).toFixed(2),
+            receiptChange(receipt).toFixed(2),
+            receipt.payment_method || "",
+        ]);
+
+        const csvCell = (value) =>
+            `"${String(value ?? "").replaceAll('"', '""')}"`;
+
+        const csv = [headers, ...rows]
+            .map((row) => row.map(csvCell).join(","))
+            .join("\r\n");
+
+        const blob = new Blob(["\uFEFF" + csv], {
+            type: "text/csv;charset=utf-8;",
+        });
+
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+
+        link.href = url;
+        link.download = `uniteq-receipts-${dateToday()}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        URL.revokeObjectURL(url);
     }
-
-
-    /* =====================================================
-       SUMMARY
-    ===================================================== */
-
-    const totalReceipts =
-        receipts.length;
-
-
-    const totalDue =
-        receipts.reduce(
-            (
-                total,
-                receipt
-            ) =>
-                total +
-                getAmountDue(
-                    receipt
-                ),
-            0
-        );
-
-
-    const totalPaid =
-        receipts.reduce(
-            (
-                total,
-                receipt
-            ) =>
-                total +
-                getAmountPaid(
-                    receipt
-                ),
-            0
-        );
-
-
-    const totalBalance =
-        receipts.reduce(
-            (
-                total,
-                receipt
-            ) =>
-                total +
-                getRemainingBalance(
-                    receipt
-                ),
-            0
-        );
-
-
-    const paidCount =
-        receipts.filter(
-            (receipt) =>
-                getStatus(
-                    receipt
-                ) === "Paid"
-        ).length;
-
-
-    const partialCount =
-        receipts.filter(
-            (receipt) =>
-                getStatus(
-                    receipt
-                ) ===
-                "Partially Paid"
-        ).length;
-
-
-    const unpaidCount =
-        receipts.filter(
-            (receipt) =>
-                getStatus(
-                    receipt
-                ) === "Unpaid"
-        ).length;
-
-
-    /* =====================================================
-       RENDER
-    ===================================================== */
 
     return (
-        <div className="space-y-6">
-
-            {/* =================================================
-                HEADER
-            ================================================= */}
-
-            <div className="bg-[#102d55] rounded-2xl px-7 py-6 text-white shadow-lg relative overflow-hidden">
-
-                <div className="absolute right-0 top-0 w-64 h-64 border border-white/10 rounded-full -translate-y-1/2 translate-x-1/3" />
-
-                <div className="absolute right-24 bottom-[-100px] w-56 h-56 border border-white/10 rounded-full" />
-
-                <div className="relative flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-
-                    <div className="flex items-center gap-4">
-
-                        <div className="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-md">
-
-                            <ReceiptIcon
-                                size={29}
-                                className="text-[#102d55]"
-                            />
-
+        <div className="min-h-screen bg-[#f5f7fa]">
+            <header className="bg-[#102d55] text-white">
+                <div className="mx-auto flex max-w-[1500px] flex-col gap-5 px-6 py-7 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex items-center gap-5">
+                        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white shadow-lg">
+                            <ReceiptIcon size={32} className="text-[#102d55]" />
                         </div>
 
                         <div>
-
                             <p className="text-sm text-blue-100">
-                                University of Abra | Main Campus
-                                <br />
-                                Cashier's Unit
+                                University of Abra | Main Campus · Cashier's Unit
                             </p>
-
-                            <h1 className="text-3xl font-bold">
+                            <h1 className="mt-1 text-3xl font-bold sm:text-4xl">
                                 Official Receipts
                             </h1>
-
+                            <p className="mt-2 text-blue-100">
+                                Record payments, calculate change, and print receipts.
+                            </p>
                         </div>
-
                     </div>
 
-
-                    <button
-                        onClick={
-                            loadReceipts
-                        }
-                        disabled={
-                            loading
-                        }
-                        className="inline-flex items-center justify-center gap-2 px-5 py-3 border-2 border-white rounded-xl font-semibold hover:bg-white hover:text-[#102d55] transition disabled:opacity-60"
-                    >
-
-                        <RefreshCw
-                            size={17}
-                            className={
-                                loading
-                                    ? "animate-spin"
-                                    : ""
-                            }
-                        />
-
-                        Refresh
-
-                    </button>
-
-                </div>
-
-            </div>
-
-
-            {/* =================================================
-                SUMMARY
-            ================================================= */}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-
-                    <p className="text-sm text-gray-500">
-                        Total Receipts
-                    </p>
-
-                    <h2 className="text-3xl font-bold text-[#102d55] mt-2">
-                        {totalReceipts}
-                    </h2>
-
-                </div>
-
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-
-                    <p className="text-sm text-gray-500">
-                        Amount Due
-                    </p>
-
-                    <h2 className="text-xl font-bold text-[#102d55] mt-2">
-                        {formatCurrency(
-                            totalDue
-                        )}
-                    </h2>
-
-                </div>
-
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-
-                    <p className="text-sm text-gray-500">
-                        Amount Paid
-                    </p>
-
-                    <h2 className="text-xl font-bold text-green-600 mt-2">
-                        {formatCurrency(
-                            totalPaid
-                        )}
-                    </h2>
-
-                </div>
-
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-
-                    <p className="text-sm text-gray-500">
-                        Remaining
-                    </p>
-
-                    <h2 className="text-xl font-bold text-red-600 mt-2">
-                        {formatCurrency(
-                            totalBalance
-                        )}
-                    </h2>
-
-                </div>
-
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-
-                    <p className="text-sm text-gray-500">
-                        Payment Status
-                    </p>
-
-                    <div className="flex flex-wrap gap-2 mt-3">
-
-                        <span className="text-xs font-bold text-green-700">
-                            {paidCount} Paid
-                        </span>
-
-                        <span className="text-xs font-bold text-yellow-700">
-                            {partialCount} Partial
-                        </span>
-
-                        <span className="text-xs font-bold text-red-700">
-                            {unpaidCount} Unpaid
-                        </span>
-
-                    </div>
-
-                </div>
-
-            </div>
-
-
-            {/* =================================================
-                RECEIPT PORTAL
-            ================================================= */}
-
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-
-                <div className="p-6 border-b border-gray-200">
-
-                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-
-                        <div className="flex items-center gap-3">
-
-                            <div className="w-11 h-11 rounded-xl bg-blue-50 flex items-center justify-center">
-
-                                <ReceiptIcon
-                                    size={22}
-                                    className="text-[#102d55]"
-                                />
-
-                            </div>
-
-                            <div>
-
-                                <h2 className="text-xl font-bold text-gray-900">
-                                    Receipt Portal
-                                </h2>
-
-                                <p className="text-sm text-gray-500">
-                                    Create, update, and monitor official receipt transactions.
-                                </p>
-
-                            </div>
-
-                        </div>
-
-
+                    <div className="flex flex-wrap gap-3">
                         <button
-                            onClick={
-                                openAddModal
-                            }
-                            className="inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-5 py-3 rounded-xl font-semibold shadow-sm transition"
+                            type="button"
+                            onClick={loadPage}
+                            disabled={loading}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-white/80 px-4 py-3 font-semibold transition hover:bg-white hover:text-[#102d55] disabled:opacity-50"
                         >
-
-                            <Plus
-                                size={19}
+                            <RefreshCw
+                                size={17}
+                                className={loading ? "animate-spin" : ""}
                             />
-
-                            Add New Receipt
-
+                            Refresh
                         </button>
 
+                        <button
+                            type="button"
+                            onClick={exportCsv}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-white/80 px-4 py-3 font-semibold transition hover:bg-white hover:text-[#102d55]"
+                        >
+                            <Download size={17} />
+                            Export CSV
+                        </button>
                     </div>
-
-
-                    {/* SEARCH */}
-
-                    <div className="relative mt-6 max-w-xl">
-
-                        <Search
-                            size={19}
-                            className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
-                        />
-
-                        <input
-                            type="text"
-                            value={
-                                search
-                            }
-                            onChange={(e) =>
-                                setSearch(
-                                    e.target.value
-                                )
-                            }
-                            placeholder="Search receipt number, payer, purpose..."
-                            className="w-full border border-gray-300 rounded-xl pl-11 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] focus:border-[#0797a6]"
-                        />
-
-                    </div>
-
                 </div>
-
-
-                {/* =================================================
-                    TABLE
-                ================================================= */}
-
-                <div className="overflow-x-auto">
-
-                    <table className="w-full min-w-[1200px]">
-
-                        <thead className="bg-[#eef4f8]">
-
-                            <tr>
-
-                                <th className="text-left px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Receipt No.
-                                </th>
-
-                                <th className="text-left px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Date
-                                </th>
-
-                                <th className="text-left px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Payer
-                                </th>
-
-                                <th className="text-left px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Fee Type
-                                </th>
-
-                                <th className="text-right px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Amount Due
-                                </th>
-
-                                <th className="text-right px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Amount Paid
-                                </th>
-
-                                <th className="text-center px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Status
-                                </th>
-
-                                <th className="text-center px-5 py-4 text-xs font-bold text-gray-600 uppercase">
-                                    Action
-                                </th>
-
-                            </tr>
-
-                        </thead>
-
-
-                        <tbody className="divide-y divide-gray-100">
-
-                            {loading ? (
-
-                                <tr>
-
-                                    <td
-                                        colSpan="8"
-                                        className="text-center py-14 text-gray-500"
-                                    >
-
-                                        <RefreshCw
-                                            size={25}
-                                            className="animate-spin mx-auto mb-3"
-                                        />
-
-                                        Loading official receipts...
-
-                                    </td>
-
-                                </tr>
-
-                            ) : filteredReceipts.length === 0 ? (
-
-                                <tr>
-
-                                    <td
-                                        colSpan="8"
-                                        className="text-center py-14 text-gray-500"
-                                    >
-
-                                        No official receipts found.
-
-                                    </td>
-
-                                </tr>
-
-                            ) : (
-
-                                filteredReceipts.map(
-                                    (receipt) => {
-
-                                        const status =
-                                            getStatus(
-                                                receipt
-                                            );
-
-                                        const balance =
-                                            getRemainingBalance(
-                                                receipt
-                                            );
-
-                                        return (
-
-                                            <tr
-                                                key={
-                                                    receipt.id
-                                                }
-                                                className="hover:bg-blue-50/40 transition"
-                                            >
-
-                                                {/* RECEIPT NUMBER */}
-
-                                                <td className="px-5 py-5">
-
-                                                    <span className="font-bold text-[#102d55]">
-                                                        {getReceiptNumber(
-                                                            receipt
-                                                        )}
-                                                    </span>
-
-                                                </td>
-
-
-                                                {/* DATE */}
-
-                                                <td className="px-5 py-5 text-sm text-gray-600">
-
-                                                    <div className="flex items-center gap-2">
-
-                                                        <CalendarDays
-                                                            size={
-                                                                16
-                                                            }
-                                                            className="text-gray-400"
-                                                        />
-
-                                                        {formatDate(
-                                                            receipt.date ||
-                                                            receipt.created_at
-                                                        )}
-
-                                                    </div>
-
-                                                </td>
-
-
-                                                {/* PAYER */}
-
-                                                <td className="px-5 py-5">
-
-                                                    <div className="flex items-center gap-3">
-
-                                                        <div className="w-9 h-9 rounded-full bg-cyan-50 flex items-center justify-center">
-
-                                                            <User
-                                                                size={
-                                                                    17
-                                                                }
-                                                                className="text-cyan-600"
-                                                            />
-
-                                                        </div>
-
-                                                        <div>
-
-                                                            <p className="font-semibold text-gray-900">
-                                                                {getPayer(
-                                                                    receipt
-                                                                )}
-                                                            </p>
-
-                                                            {receipt.address_department && (
-
-                                                                <p className="text-xs text-gray-500">
-                                                                    {
-                                                                        receipt.address_department
-                                                                    }
-                                                                </p>
-
-                                                            )}
-
-                                                        </div>
-
-                                                    </div>
-
-                                                </td>
-
-
-                                                {/* PURPOSE */}
-
-                                                <td className="px-5 py-5">
-
-                                                    <span className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold">
-
-                                                        <FileText
-                                                            size={
-                                                                14
-                                                            }
-                                                        />
-
-                                                        {getPurpose(
-                                                            receipt
-                                                        )}
-
-                                                    </span>
-
-                                                </td>
-
-
-                                                {/* AMOUNT DUE */}
-
-                                                <td className="px-5 py-5 text-right font-semibold text-gray-900">
-
-                                                    {formatCurrency(
-                                                        getAmountDue(
-                                                            receipt
-                                                        )
-                                                    )}
-
-                                                </td>
-
-
-                                                {/* AMOUNT PAID */}
-
-                                                <td className="px-5 py-5 text-right font-bold text-gray-900">
-
-                                                    {formatCurrency(
-                                                        getAmountPaid(
-                                                            receipt
-                                                        )
-                                                    )}
-
-                                                </td>
-
-
-                                                {/* STATUS */}
-
-                                                <td className="px-5 py-5 text-center">
-
-                                                    <span
-                                                        className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold ${getStatusStyle(
-                                                            status
-                                                        )}`}
-                                                    >
-
-                                                        {getStatusIcon(
-                                                            status
-                                                        )}
-
-                                                        {status}
-
-                                                    </span>
-
-                                                </td>
-
-
-                                                {/* ACTION */}
-
-                                                <td className="px-5 py-5">
-
-                                                    <div className="flex items-center justify-center gap-2 flex-wrap">
-
-                                                        <button
-                                                            onClick={() =>
-                                                                setSelectedReceipt(
-                                                                    receipt
-                                                                )
-                                                            }
-                                                            className="inline-flex items-center gap-1.5 text-[#007c8b] font-semibold hover:text-[#005b66]"
-                                                        >
-
-                                                            <Eye
-                                                                size={
-                                                                    16
-                                                                }
-                                                            />
-
-                                                            View
-
-                                                        </button>
-
-
-                                                        <button
-                                                            onClick={() =>
-                                                                openEditModal(
-                                                                    receipt
-                                                                )
-                                                            }
-                                                            className="inline-flex items-center gap-1.5 text-blue-700 font-semibold hover:text-blue-900"
-                                                        >
-
-                                                            <Pencil
-                                                                size={
-                                                                    15
-                                                                }
-                                                            />
-
-                                                            Edit
-
-                                                        </button>
-
-
-                                                        {status !==
-                                                            "Paid" &&
-                                                            balance >
-                                                                0 && (
-
-                                                                <button
-                                                                    onClick={() =>
-                                                                        markAsPaid(
-                                                                            receipt
-                                                                        )
-                                                                    }
-                                                                    disabled={
-                                                                        saving
-                                                                    }
-                                                                    className="inline-flex items-center gap-1.5 text-green-700 font-semibold hover:text-green-900 disabled:opacity-50"
-                                                                >
-
-                                                                    <CheckCircle
-                                                                        size={
-                                                                            16
-                                                                        }
-                                                                    />
-
-                                                                    Paid
-
-                                                                </button>
-
-                                                            )}
-
-                                                    </div>
-
-                                                </td>
-
-                                            </tr>
-
-                                        );
-                                    }
-                                )
-
-                            )}
-
-                        </tbody>
-
-                    </table>
-
-                </div>
-
-            </div>
-
-
-            {/* =================================================
-                ADD / EDIT MODAL
-            ================================================= */}
-
-            {showModal && (
-
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-
-                    <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
-
-                        {/* HEADER */}
-
-                        <div className="sticky top-0 bg-white flex items-center justify-between px-6 py-5 border-b z-10">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Official Receipt
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55]">
-
-                                    {editingReceipt
-                                        ? "Update Receipt"
-                                        : "Add New Receipt"}
-
-                                </h2>
-
-                            </div>
-
-
-                            <button
-                                onClick={() =>
-                                    setShowModal(
-                                        false
-                                    )
-                                }
-                                className="p-2 rounded-lg hover:bg-gray-100"
-                            >
-
-                                <X
-                                    size={22}
-                                />
-
-                            </button>
-
+            </header>
+
+            <main className="mx-auto max-w-[1500px] space-y-7 px-6 py-8">
+                <section className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                    <SummaryCard
+                        title="Total Payments Recorded"
+                        value={money(totalCollected)}
+                        note="Total fees applied to receipts"
+                        icon={<Wallet size={24} />}
+                        color="green"
+                    />
+
+                    <SummaryCard
+                        title="Today's Payments"
+                        value={money(todayCollected)}
+                        note="Fees recorded today"
+                        icon={<CalendarDays size={24} />}
+                        color="blue"
+                    />
+
+                    <SummaryCard
+                        title="Receipt Records"
+                        value={String(receipts.length)}
+                        note="Total saved receipts"
+                        icon={<ReceiptIcon size={24} />}
+                        color="navy"
+                    />
+                </section>
+
+                <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+                    <div className="flex flex-col gap-4 border-b border-gray-200 px-6 py-5 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <h2 className="text-xl font-bold text-[#102d55]">
+                                Receipt Records
+                            </h2>
+                            <p className="mt-1 text-sm text-gray-500">
+                                Search, view, update, and print payment receipts.
+                            </p>
                         </div>
 
+                        {canManageReceipts && (
+                            <button
+                                type="button"
+                                onClick={openAddForm}
+                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-3 font-semibold text-white transition hover:bg-teal-700"
+                            >
+                                <Plus size={18} />
+                                Create Receipt
+                            </button>
+                        )}
+                    </div>
 
-                        {/* FORM */}
+                    <div className="border-b border-gray-100 px-6 py-5">
+                        <div className="relative max-w-xl">
+                            <Search
+                                size={18}
+                                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+                            />
+                            <input
+                                type="text"
+                                value={search}
+                                onChange={(event) =>
+                                    setSearch(event.target.value)
+                                }
+                                placeholder="Search receipt number, payer, or collection..."
+                                className="w-full rounded-xl border border-gray-300 py-3 pl-10 pr-4 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500"
+                            />
+                        </div>
+                    </div>
 
-                        <form
-                            onSubmit={
-                                handleSubmit
-                            }
-                            className="p-6 space-y-6"
-                        >
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead className="bg-[#edf3f8] text-[#102d55]">
+                                <tr>
+                                    <th className="whitespace-nowrap px-4 py-4 text-left font-semibold">
+                                        RECEIPT NO.
+                                    </th>
+                                    <th className="whitespace-nowrap px-4 py-4 text-left font-semibold">
+                                        PAYER
+                                    </th>
+                                    <th className="whitespace-nowrap px-4 py-4 text-left font-semibold">
+                                        COLLECTION
+                                    </th>
+                                    <th className="whitespace-nowrap px-4 py-4 text-right font-semibold">
+                                        AMOUNT DUE
+                                    </th>
+                                    <th className="whitespace-nowrap px-4 py-4 text-right font-semibold">
+                                        CHANGE
+                                    </th>
+                                    <th className="whitespace-nowrap px-4 py-4 text-left font-semibold">
+                                        DATE
+                                    </th>
+                                    <th className="whitespace-nowrap px-4 py-4 text-center font-semibold">
+                                        ACTIONS
+                                    </th>
+                                </tr>
+                            </thead>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <tbody className="divide-y divide-gray-100">
+                                {loading ? (
+                                    <tr>
+                                        <td
+                                            colSpan={7}
+                                            className="px-4 py-12 text-center text-gray-500"
+                                        >
+                                            <span className="inline-flex items-center gap-3">
+                                                <RefreshCw
+                                                    size={18}
+                                                    className="animate-spin"
+                                                />
+                                                Loading receipts...
+                                            </span>
+                                        </td>
+                                    </tr>
+                                ) : filteredReceipts.length === 0 ? (
+                                    <tr>
+                                        <td
+                                            colSpan={7}
+                                            className="px-4 py-12 text-center text-gray-500"
+                                        >
+                                            <ReceiptIcon
+                                                size={36}
+                                                className="mx-auto mb-3 text-gray-300"
+                                            />
+                                            <p className="font-semibold">
+                                                No receipts found
+                                            </p>
+                                            <p className="mt-1 text-sm">
+                                                {search
+                                                    ? "Try a different search."
+                                                    : "Create a receipt after registering collection fees."}
+                                            </p>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    filteredReceipts.map((receipt) => (
+                                        <tr
+                                            key={receipt.id}
+                                            className="transition hover:bg-gray-50"
+                                        >
+                                            <td className="whitespace-nowrap px-4 py-5 font-semibold text-[#102d55]">
+                                                {receiptNumber(receipt)}
+                                            </td>
 
-                                {/* DATE */}
+                                            <td className="px-4 py-5">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-50">
+                                                        <User
+                                                            size={16}
+                                                            className="text-cyan-600"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-medium text-gray-900">
+                                                            {receipt.payer_name || "—"}
+                                                        </p>
+                                                        <p className="mt-1 text-xs text-gray-500">
+                                                            {receipt.address_department || "No department"}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </td>
 
-                                <div>
+                                            <td className="px-4 py-5">
+                                                <span className="inline-flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-1.5 text-xs text-blue-700">
+                                                    <FileText size={13} />
+                                                    {getCollectionNameFromReceipt(receipt)}
+                                                </span>
+                                            </td>
 
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Date
-                                    </label>
+                                            <td className="whitespace-nowrap px-4 py-5 text-right font-bold text-green-700">
+                                                {money(receiptAmountDue(receipt))}
+                                            </td>
 
+                                            <td className="whitespace-nowrap px-4 py-5 text-right font-semibold text-[#102d55]">
+                                                {money(receiptChange(receipt))}
+                                            </td>
+
+                                            <td className="whitespace-nowrap px-4 py-5 text-gray-600">
+                                                {displayDate(receipt.date)}
+                                            </td>
+
+                                            <td className="px-4 py-5">
+                                                <div className="flex items-center justify-center gap-3 whitespace-nowrap">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setSelectedReceipt(receipt)}
+                                                        className="inline-flex items-center gap-1 text-cyan-700 hover:text-cyan-900"
+                                                    >
+                                                        <Eye size={15} />
+                                                        View
+                                                    </button>
+
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => printReceipt(receipt)}
+                                                        className="inline-flex items-center gap-1 text-green-700 hover:text-green-900"
+                                                    >
+                                                        <Printer size={15} />
+                                                        Print
+                                                    </button>
+
+                                                    {canManageReceipts && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openEditForm(receipt)}
+                                                            className="inline-flex items-center gap-1 text-[#102d55] hover:text-blue-700"
+                                                        >
+                                                            <Edit size={15} />
+                                                            Edit
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="border-t border-gray-200 px-6 py-4 text-sm text-gray-500">
+                        Showing {filteredReceipts.length} of {receipts.length} receipt records
+                    </div>
+                </section>
+            </main>
+
+            {showForm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4">
+                    <div className="my-6 max-h-[94vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-5">
+                            <div>
+                                <h2 className="text-xl font-bold text-[#102d55]">
+                                    {editingReceipt ? "Edit Receipt" : "Create Official Receipt"}
+                                </h2>
+                                <p className="mt-1 text-sm text-gray-500">
+                                    Choose a registered collection to load its fixed fee.
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowForm(false);
+                                    resetForm();
+                                }}
+                                disabled={saving}
+                                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+                                aria-label="Close form"
+                            >
+                                <X size={22} />
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleSave} className="space-y-6 p-6">
+                            {activeCollections.length === 0 && (
+                                <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                                    <AlertCircle size={20} className="shrink-0" />
+                                    <div>
+                                        <p className="font-semibold">
+                                            No registered collections are available.
+                                        </p>
+                                        <p className="mt-1">
+                                            Open the Collections page and register a collection name and fixed fee first. Then refresh this page.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                                <FormField label="Receipt Date *">
                                     <input
                                         type="date"
                                         name="date"
-                                        value={
-                                            form.date
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
+                                        value={form.date}
+                                        onChange={handleFormChange}
                                         required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        className={inputClass}
                                     />
+                                </FormField>
 
-                                </div>
+                                <FormField label="Registered Collection / Fee *">
+                                    <select
+                                        name="collection_id"
+                                        value={form.collection_id}
+                                        onChange={handleFormChange}
+                                        required
+                                        disabled={activeCollections.length === 0}
+                                        className={inputClass}
+                                    >
+                                        <option value="">Select a collection</option>
+                                        {activeCollections.map((collection) => (
+                                            <option
+                                                key={collection.id}
+                                                value={collection.id}
+                                            >
+                                                {getCollectionName(collection)} — {money(getCollectionFee(collection))}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </FormField>
 
-
-                                {/* PAYER */}
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Payer Name
-                                    </label>
-
+                                <FormField label="Payer / Student Name *">
                                     <input
                                         type="text"
                                         name="payer_name"
-                                        value={
-                                            form.payer_name
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="Enter payer name"
+                                        value={form.payer_name}
+                                        onChange={handleFormChange}
                                         required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        maxLength={255}
+                                        placeholder="Enter the payer's full name"
+                                        className={inputClass}
                                     />
+                                </FormField>
 
-                                </div>
-
-
-                                {/* PURPOSE */}
-
-                                <div className="md:col-span-2">
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Fee Type / Purpose
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        name="purpose"
-                                        value={
-                                            form.purpose
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="e.g. Tuition Fee, Certificate of Enrollment, Miscellaneous Fee"
-                                        required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                    />
-
-                                </div>
-
-
-                                {/* AMOUNT DUE */}
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Amount Due
-                                    </label>
-
-                                    <div className="relative">
-
-                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 font-semibold text-gray-400">
-                                            ₱
-                                        </span>
-
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            min="0"
-                                            name="amount_due"
-                                            value={
-                                                form.amount_due
-                                            }
-                                            onChange={
-                                                handleChange
-                                            }
-                                            placeholder="0.00"
-                                            required
-                                            className="w-full border border-gray-300 rounded-xl pl-9 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                        />
-
-                                    </div>
-
-                                </div>
-
-
-                                {/* AMOUNT PAID */}
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Amount Paid
-                                    </label>
-
-                                    <div className="relative">
-
-                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 font-semibold text-gray-400">
-                                            ₱
-                                        </span>
-
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            min="0"
-                                            name="amount_paid"
-                                            value={
-                                                form.amount_paid
-                                            }
-                                            onChange={
-                                                handleChange
-                                            }
-                                            placeholder="0.00"
-                                            className="w-full border border-gray-300 rounded-xl pl-9 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                        />
-
-                                    </div>
-
-                                </div>
-
-
-                                {/* PAYMENT METHOD */}
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Payment Method
-                                    </label>
-
-                                    <select
-                                        name="payment_method"
-                                        value={
-                                            form.payment_method
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
-                                    >
-
-                                        <option value="Cash">
-                                            Cash
-                                        </option>
-
-                                        <option value="Bank Transfer">
-                                            Bank Transfer
-                                        </option>
-
-                                        <option value="Online Payment">
-                                            Online Payment
-                                        </option>
-
-                                        <option value="Check">
-                                            Check
-                                        </option>
-
-                                    </select>
-
-                                </div>
-
-
-                                {/* ADDRESS */}
-
-                                <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Address / Department
-                                    </label>
-
+                                <FormField label="Address / Department">
                                     <input
                                         type="text"
                                         name="address_department"
-                                        value={
-                                            form.address_department
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="e.g. BSIT Department"
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        value={form.address_department}
+                                        onChange={handleFormChange}
+                                        maxLength={255}
+                                        placeholder="Enter department or address"
+                                        className={inputClass}
                                     />
+                                </FormField>
 
-                                </div>
+                                <FormField label="Fixed Amount Due (₱)">
+                                    <input
+                                        type="number"
+                                        value={form.amount_due}
+                                        readOnly
+                                        className={`${inputClass} bg-gray-100 font-semibold text-gray-700`}
+                                    />
+                                    <p className="mt-1 text-xs text-gray-500">
+                                        This amount comes from the registered collection fee.
+                                    </p>
+                                </FormField>
 
+                                <FormField label="Cash Received (₱) *">
+                                    <input
+                                        type="number"
+                                        name="cash_received"
+                                        value={form.cash_received}
+                                        onChange={handleFormChange}
+                                        min={form.amount_due || "0.01"}
+                                        step="0.01"
+                                        required
+                                        placeholder="Enter amount handed over"
+                                        className={inputClass}
+                                    />
+                                </FormField>
 
-                                {/* DESCRIPTION */}
+                                <FormField label="Payment Method *">
+                                    <select
+                                        name="payment_method"
+                                        value={form.payment_method}
+                                        onChange={handleFormChange}
+                                        required
+                                        className={inputClass}
+                                    >
+                                        <option value="Cash">Cash</option>
+                                        <option value="Bank Transfer">Bank Transfer</option>
+                                        <option value="Online Payment">Online Payment</option>
+                                        <option value="Check">Check</option>
+                                    </select>
+                                </FormField>
+
+                                <FormField label="Purpose">
+                                    <input
+                                        type="text"
+                                        value={selectedFormCollection ? getCollectionName(selectedFormCollection) : form.purpose}
+                                        readOnly
+                                        className={`${inputClass} bg-gray-100`}
+                                    />
+                                </FormField>
 
                                 <div className="md:col-span-2">
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Description
-                                    </label>
-
-                                    <textarea
-                                        name="description"
-                                        value={
-                                            form.description
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        rows="4"
-                                        placeholder="Additional details about the transaction..."
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] resize-none"
-                                    />
-
+                                    <FormField label="Description / Notes">
+                                        <textarea
+                                            name="description"
+                                            value={form.description}
+                                            onChange={handleFormChange}
+                                            rows={3}
+                                            maxLength={2000}
+                                            placeholder="Optional notes about this payment"
+                                            className={`${inputClass} resize-y`}
+                                        />
+                                    </FormField>
                                 </div>
-
                             </div>
 
-
-                            {/* =================================================
-                                PAYMENT PREVIEW
-                            ================================================= */}
-
-                            <div className="bg-[#eef7f8] rounded-xl p-5 border border-[#d7eeee]">
-
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-
-                                    <div>
-
-                                        <p className="text-xs text-gray-500 uppercase">
-                                            Amount Due
-                                        </p>
-
-                                        <p className="text-xl font-bold text-[#102d55] mt-1">
-                                            {formatCurrency(
-                                                Number(
-                                                    form.amount_due ||
-                                                        0
-                                                )
-                                            )}
-                                        </p>
-
-                                    </div>
-
-
-                                    <div>
-
-                                        <p className="text-xs text-gray-500 uppercase">
-                                            Amount Paid
-                                        </p>
-
-                                        <p className="text-xl font-bold text-green-700 mt-1">
-                                            {formatCurrency(
-                                                Number(
-                                                    form.amount_paid ||
-                                                        0
-                                                )
-                                            )}
-                                        </p>
-
-                                    </div>
-
-
-                                    <div>
-
-                                        <p className="text-xs text-gray-500 uppercase">
-                                            Remaining Balance
-                                        </p>
-
-                                        <p className="text-xl font-bold text-red-600 mt-1">
-                                            {formatCurrency(
-                                                Math.max(
-                                                    Number(
-                                                        form.amount_due ||
-                                                            0
-                                                    ) -
-                                                        Number(
-                                                            form.amount_paid ||
-                                                                0
-                                                        ),
-                                                    0
-                                                )
-                                            )}
-                                        </p>
-
-                                    </div>
-
-                                </div>
-
-
-                                <div className="mt-5 pt-4 border-t border-[#d7eeee] flex items-center gap-2">
-
-                                    <CreditCard
-                                        size={
-                                            18
-                                        }
-                                        className="text-[#0797a6]"
-                                    />
-
-                                    <span className="text-sm font-semibold text-gray-700">
-
-                                        Payment Status:
-
-                                    </span>
-
-
-                                    {(() => {
-
-                                        const due =
-                                            Number(
-                                                form.amount_due ||
-                                                    0
-                                            );
-
-                                        const paid =
-                                            Number(
-                                                form.amount_paid ||
-                                                    0
-                                            );
-
-                                        let status =
-                                            "Unpaid";
-
-                                        if (
-                                            due >
-                                                0 &&
-                                            paid >=
-                                                due
-                                        ) {
-
-                                            status =
-                                                "Paid";
-
-                                        } else if (
-                                            paid >
-                                                0 &&
-                                            paid <
-                                                due
-                                        ) {
-
-                                            status =
-                                                "Partially Paid";
-                                        }
-
-
-                                        return (
-
-                                            <span
-                                                className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusStyle(
-                                                    status
-                                                )}`}
-                                            >
-
-                                                {status}
-
-                                            </span>
-
-                                        );
-
-                                    })()}
-
-                                </div>
-
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                                <AmountPanel
+                                    title="Amount Due"
+                                    value={money(amountDue)}
+                                    tone="blue"
+                                />
+                                <AmountPanel
+                                    title="Cash Received"
+                                    value={money(cashReceived)}
+                                    tone="gray"
+                                />
+                                <AmountPanel
+                                    title="Change to Return"
+                                    value={money(changeAmount)}
+                                    tone="green"
+                                />
                             </div>
 
+                            {cashReceived > 0 && cashReceived < amountDue && (
+                                <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                                    <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                                    <p>
+                                        Payment is short by {money(amountShort)}. Enter at least {money(amountDue)} to complete this receipt.
+                                    </p>
+                                </div>
+                            )}
 
-                            {/* BUTTONS */}
+                            {cashReceived >= amountDue && amountDue > 0 && (
+                                <div className="flex items-start gap-2 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
+                                    <CheckCircle size={18} className="mt-0.5 shrink-0" />
+                                    <p>
+                                        The payment covers the fee. Return {money(changeAmount)} in change to the payer.
+                                    </p>
+                                </div>
+                            )}
 
-                            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3 pt-2">
-
+                            <div className="flex flex-wrap justify-end gap-3 border-t border-gray-200 pt-5">
                                 <button
                                     type="button"
-                                    onClick={() =>
-                                        setShowModal(
-                                            false
-                                        )
-                                    }
-                                    className="px-5 py-3 rounded-xl border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
+                                    onClick={() => {
+                                        setShowForm(false);
+                                        resetForm();
+                                    }}
+                                    disabled={saving}
+                                    className="rounded-xl border border-gray-300 px-5 py-3 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                                 >
                                     Cancel
                                 </button>
 
-
                                 <button
                                     type="submit"
                                     disabled={
-                                        saving
+                                        saving ||
+                                        activeCollections.length === 0 ||
+                                        !form.collection_id
                                     }
-                                    className="px-6 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white font-semibold disabled:opacity-50"
+                                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-3 font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-
-                                    {saving
-                                        ? "Saving..."
-                                        : editingReceipt
-                                        ? "Update Receipt"
-                                        : "Save Receipt"}
-
+                                    {saving ? (
+                                        <>
+                                            <RefreshCw size={17} className="animate-spin" />
+                                            Saving...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <CheckCircle size={17} />
+                                            {editingReceipt ? "Save Changes" : "Save Receipt"}
+                                        </>
+                                    )}
                                 </button>
-
                             </div>
-
                         </form>
-
                     </div>
-
                 </div>
-
             )}
-
-
-            {/* =================================================
-                VIEW RECEIPT MODAL
-            ================================================= */}
 
             {selectedReceipt && (
-
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-
-                        {/* HEADER */}
-
-                        <div className="flex items-center justify-between p-6 border-b">
-
+                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4">
+                    <div className="my-6 max-h-[94vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                        <div className="flex items-center justify-between rounded-t-2xl bg-[#102d55] px-6 py-5 text-white">
                             <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Official Receipt
+                                <h2 className="text-xl font-bold">Receipt Details</h2>
+                                <p className="mt-1 text-sm text-blue-100">
+                                    {receiptNumber(selectedReceipt)}
                                 </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55]">
-                                    {getReceiptNumber(
-                                        selectedReceipt
-                                    )}
-                                </h2>
-
                             </div>
-
-
                             <button
-                                onClick={() =>
-                                    setSelectedReceipt(
-                                        null
-                                    )
-                                }
-                                className="p-2 rounded-lg hover:bg-gray-100"
+                                type="button"
+                                onClick={() => setSelectedReceipt(null)}
+                                className="rounded-lg p-2 hover:bg-white/10"
+                                aria-label="Close receipt details"
                             >
-
-                                <X
-                                    size={22}
-                                />
-
+                                <X size={22} />
                             </button>
-
                         </div>
 
-
-                        {/* DETAILS */}
-
-                        <div className="p-6 space-y-6">
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-
-                                <div>
-
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Date
-                                    </p>
-
-                                    <p className="font-semibold mt-1">
-                                        {formatDate(
-                                            selectedReceipt.date ||
-                                                selectedReceipt.created_at
-                                        )}
-                                    </p>
-
-                                </div>
-
-
-                                <div>
-
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Payer
-                                    </p>
-
-                                    <p className="font-semibold mt-1">
-                                        {getPayer(
-                                            selectedReceipt
-                                        )}
-                                    </p>
-
-                                </div>
-
-
-                                <div>
-
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Fee Type / Purpose
-                                    </p>
-
-                                    <p className="font-semibold text-blue-700 mt-1">
-                                        {getPurpose(
-                                            selectedReceipt
-                                        )}
-                                    </p>
-
-                                </div>
-
-
-                                <div>
-
-                                    <p className="text-xs uppercase text-gray-500">
-                                        Payment Method
-                                    </p>
-
-                                    <p className="font-semibold mt-1">
-                                        {selectedReceipt.payment_method ||
-                                            "Cash"}
-                                    </p>
-
-                                </div>
-
+                        <div className="space-y-5 p-6">
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                <Detail label="Receipt Number" value={receiptNumber(selectedReceipt)} />
+                                <Detail label="Date" value={displayDate(selectedReceipt.date)} />
+                                <Detail label="Payer" value={selectedReceipt.payer_name || "—"} />
+                                <Detail label="Collection" value={getCollectionNameFromReceipt(selectedReceipt)} />
+                                <Detail label="Address / Department" value={selectedReceipt.address_department || "—"} />
+                                <Detail label="Payment Method" value={selectedReceipt.payment_method || "Cash"} />
                             </div>
 
-
-                            {/* FINANCIAL INFORMATION */}
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
-                                <div className="bg-gray-50 rounded-xl p-4">
-
-                                    <p className="text-xs text-gray-500">
-                                        Amount Due
-                                    </p>
-
-                                    <p className="text-lg font-bold mt-1">
-                                        {formatCurrency(
-                                            getAmountDue(
-                                                selectedReceipt
-                                            )
-                                        )}
-                                    </p>
-
-                                </div>
-
-
-                                <div className="bg-green-50 rounded-xl p-4">
-
-                                    <p className="text-xs text-green-700">
-                                        Amount Paid
-                                    </p>
-
-                                    <p className="text-lg font-bold text-green-700 mt-1">
-                                        {formatCurrency(
-                                            getAmountPaid(
-                                                selectedReceipt
-                                            )
-                                        )}
-                                    </p>
-
-                                </div>
-
-
-                                <div className="bg-red-50 rounded-xl p-4">
-
-                                    <p className="text-xs text-red-700">
-                                        Remaining Balance
-                                    </p>
-
-                                    <p className="text-lg font-bold text-red-700 mt-1">
-                                        {formatCurrency(
-                                            getRemainingBalance(
-                                                selectedReceipt
-                                            )
-                                        )}
-                                    </p>
-
-                                </div>
-
+                            <div className="space-y-3 rounded-xl border border-gray-200 p-5">
+                                <MoneyDetail label="Amount Due" value={money(receiptAmountDue(selectedReceipt))} />
+                                <MoneyDetail label="Cash Received" value={money(receiptCashReceived(selectedReceipt))} />
+                                <MoneyDetail label="Change" value={money(receiptChange(selectedReceipt))} highlight />
                             </div>
-
-
-                            {/* STATUS */}
 
                             <div>
-
-                                <p className="text-xs uppercase text-gray-500 mb-2">
-                                    Payment Status
+                                <p className="text-sm text-gray-500">Description / Notes</p>
+                                <p className="mt-2 whitespace-pre-wrap text-gray-800">
+                                    {selectedReceipt.description || "No description provided."}
                                 </p>
-
-                                <span
-                                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold ${getStatusStyle(
-                                        getStatus(
-                                            selectedReceipt
-                                        )
-                                    )}`}
-                                >
-
-                                    {getStatusIcon(
-                                        getStatus(
-                                            selectedReceipt
-                                        )
-                                    )}
-
-                                    {getStatus(
-                                        selectedReceipt
-                                    )}
-
-                                </span>
-
                             </div>
 
-
-                            {/* BALANCE */}
-
-                            {getRemainingBalance(
-                                selectedReceipt
-                            ) > 0 && (
-
-                                <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-start gap-3">
-
-                                    <Wallet
-                                        size={
-                                            20
-                                        }
-                                        className="text-yellow-700 mt-0.5"
-                                    />
-
-                                    <div>
-
-                                        <p className="font-bold text-yellow-800">
-                                            Outstanding Balance
-                                        </p>
-
-                                        <p className="text-sm text-yellow-700 mt-1">
-                                            This receipt still has a balance of{" "}
-                                            <strong>
-                                                {formatCurrency(
-                                                    getRemainingBalance(
-                                                        selectedReceipt
-                                                    )
-                                                )}
-                                            </strong>
-                                            .
-                                        </p>
-
-                                    </div>
-
-                                </div>
-
-                            )}
-
-
-                            {/* ADDRESS */}
-
-                            <div>
-
-                                <p className="text-xs uppercase text-gray-500">
-                                    Address / Department
-                                </p>
-
-                                <p className="font-semibold mt-1">
-                                    {selectedReceipt.address_department ||
-                                        "—"}
-                                </p>
-
-                            </div>
-
-
-                            {/* DESCRIPTION */}
-
-                            <div>
-
-                                <p className="text-xs uppercase text-gray-500 mb-2">
-                                    Description
-                                </p>
-
-                                <div className="bg-gray-50 rounded-xl p-4 text-gray-700">
-                                    {selectedReceipt.description ||
-                                        "No description provided."}
-                                </div>
-
-                            </div>
-
-                        </div>
-
-
-                        {/* FOOTER */}
-
-                        <div className="flex flex-col sm:flex-row sm:justify-end gap-3 p-6 border-t">
-
-                            {getStatus(
-                                selectedReceipt
-                            ) !== "Paid" && (
+                            <div className="flex flex-wrap justify-end gap-3 border-t border-gray-200 pt-5">
+                                {canManageReceipts && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const receipt = selectedReceipt;
+                                            setSelectedReceipt(null);
+                                            openEditForm(receipt);
+                                        }}
+                                        className="inline-flex items-center gap-2 rounded-xl bg-[#102d55] px-5 py-3 font-semibold text-white hover:bg-blue-900"
+                                    >
+                                        <Edit size={17} />
+                                        Edit
+                                    </button>
+                                )}
 
                                 <button
-                                    onClick={() =>
-                                        markAsPaid(
-                                            selectedReceipt
-                                        )
-                                    }
-                                    disabled={
-                                        saving
-                                    }
-                                    className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-green-600 text-white rounded-xl font-semibold hover:bg-green-700 disabled:opacity-50"
+                                    type="button"
+                                    onClick={() => printReceipt(selectedReceipt)}
+                                    className="inline-flex items-center gap-2 rounded-xl bg-teal-600 px-5 py-3 font-semibold text-white hover:bg-teal-700"
                                 >
-
-                                    <CheckCircle
-                                        size={
-                                            17
-                                        }
-                                    />
-
-                                    Mark as Paid
-
+                                    <Printer size={17} />
+                                    Print Receipt
                                 </button>
 
-                            )}
-
-
-                            <button
-                                onClick={() => {
-
-                                    const receipt =
-                                        selectedReceipt;
-
-                                    setSelectedReceipt(
-                                        null
-                                    );
-
-                                    openEditModal(
-                                        receipt
-                                    );
-
-                                }}
-                                className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-blue-700 text-white rounded-xl font-semibold hover:bg-blue-800"
-                            >
-
-                                <Pencil
-                                    size={
-                                        17
-                                    }
-                                />
-
-                                Edit Receipt
-
-                            </button>
-
-
-                            <button
-                                onClick={() =>
-                                    setSelectedReceipt(
-                                        null
-                                    )
-                                }
-                                className="px-5 py-3 border border-gray-300 rounded-xl font-semibold hover:bg-gray-50"
-                            >
-                                Close
-                            </button>
-
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedReceipt(null)}
+                                    className="rounded-xl border border-gray-300 px-5 py-3 font-semibold text-gray-700 hover:bg-gray-50"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         </div>
-
                     </div>
-
                 </div>
-
             )}
+        </div>
+    );
+}
 
+const inputClass =
+    "w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500 disabled:cursor-not-allowed disabled:bg-gray-100";
+
+function FormField({ label, children }) {
+    return (
+        <label className="block">
+            <span className="mb-2 block text-sm font-medium text-gray-700">
+                {label}
+            </span>
+            {children}
+        </label>
+    );
+}
+
+function SummaryCard({ title, value, note, icon, color }) {
+    const colors = {
+        green: {
+            icon: "bg-green-50 text-green-600",
+            value: "text-green-600",
+        },
+        blue: {
+            icon: "bg-blue-50 text-blue-600",
+            value: "text-blue-600",
+        },
+        navy: {
+            icon: "bg-blue-50 text-[#102d55]",
+            value: "text-[#102d55]",
+        },
+    };
+
+    const selected = colors[color] || colors.navy;
+
+    return (
+        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+                <div>
+                    <p className="text-sm text-gray-500">{title}</p>
+                    <h2 className={`mt-2 text-2xl font-bold ${selected.value}`}>
+                        {value}
+                    </h2>
+                </div>
+                <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${selected.icon}`}>
+                    {icon}
+                </div>
+            </div>
+            <p className="mt-4 text-xs text-gray-500">{note}</p>
+        </div>
+    );
+}
+
+function AmountPanel({ title, value, tone }) {
+    const tones = {
+        blue: "border-blue-100 bg-blue-50 text-[#102d55]",
+        gray: "border-gray-200 bg-gray-50 text-gray-800",
+        green: "border-green-100 bg-green-50 text-green-700",
+    };
+
+    return (
+        <div className={`rounded-xl border p-4 ${tones[tone] || tones.gray}`}>
+            <p className="text-sm opacity-80">{title}</p>
+            <p className="mt-2 text-xl font-bold">{value}</p>
+        </div>
+    );
+}
+
+function Detail({ label, value }) {
+    return (
+        <div className="rounded-xl border border-gray-200 p-4">
+            <p className="text-sm text-gray-500">{label}</p>
+            <p className="mt-2 break-words font-semibold text-gray-900">
+                {value}
+            </p>
+        </div>
+    );
+}
+
+function MoneyDetail({ label, value, highlight = false }) {
+    return (
+        <div className="flex items-center justify-between gap-4">
+            <span className="text-sm text-gray-600">{label}</span>
+            <span className={`font-bold ${highlight ? "text-green-700" : "text-gray-900"}`}>
+                {value}
+            </span>
         </div>
     );
 }
