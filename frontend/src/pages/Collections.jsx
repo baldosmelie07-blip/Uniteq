@@ -13,7 +13,7 @@ import {
   ToggleRight,
 } from "lucide-react";
 
-const API = "http://127.0.0.1:8000/api/collections";
+const API = "https://uniteq-production-zsysbh.laravel.cloud/api/collections";
 
 function getToken() {
   for (const key of [

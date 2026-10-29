@@ -17,7 +17,7 @@ import {
     KeyRound,
 } from "lucide-react";
 
-const API_URL = "http://127.0.0.1:8000/api";
+const API_URL = "https://uniteq-production-zsysbh.laravel.cloud/api";
 
 const ROLES = [
     "System Administrator",

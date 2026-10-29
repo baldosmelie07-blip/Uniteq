@@ -18,7 +18,7 @@ import {
     AlertCircle,
 } from "lucide-react";
 
-const API = "http://127.0.0.1:8000/api";
+const API = "https://uniteq-production-zsysbh.laravel.cloud/api";
 
 const inputClass =
     "w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500 disabled:cursor-not-allowed disabled:bg-gray-100";
