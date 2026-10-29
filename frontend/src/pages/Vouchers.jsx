@@ -24,7 +24,7 @@ import {
 ========================================================= */
 
 const API_BASE_URL = (
-    import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api"
+    import.meta.env.VITE_API_URL || "https://uniteq-production-zsysbh.laravel.cloud/api"
 ).replace(/\/+$/, "");
 
 const API_URL = `${API_BASE_URL}/vouchers`;
