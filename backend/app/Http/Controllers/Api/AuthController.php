@@ -10,112 +10,70 @@ use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    /**
-     * Log in a user.
-     */
     public function login(Request $request)
     {
         $validated = $request->validate([
-            'email' => [
-                'required',
-                'email',
-                'max:255',
-            ],
-            'password' => [
-                'required',
-                'string',
-            ],
+            'email' => ['required', 'email'],
+            'password' => ['required', 'string'],
         ]);
 
-        // Find the user by email address.
-        $user = User::where('email', $validated['email'])
-            ->first();
+        $user = User::where('email', $validated['email'])->first();
 
-        // Reject incorrect credentials.
         if (
             !$user ||
             !Hash::check($validated['password'], $user->password)
         ) {
             throw ValidationException::withMessages([
-                'email' => [
-                    'The provided credentials are incorrect.',
-                ],
+                'email' => ['The email or password is incorrect.'],
             ]);
         }
 
-        // Only active accounts may log in.
-        if (!$user->isActive()) {
+        if (!$user->canAccessSystem()) {
             return response()->json([
-                'message' => 'Your account is inactive. Please contact the System Administrator.',
+                'success' => false,
+                'message' => 'Your account is inactive. Please contact the administrator.',
             ], 403);
         }
 
-        // Create a new Sanctum API token.
-        $token = $user->createToken('uniteq-web')->plainTextToken;
+        // Remove expired or old tokens for this application before
+        // issuing a new token to this user.
+        $user->tokens()->where('name', 'uniteq-token')->delete();
+
+        $token = $user->createToken('uniteq-token')->plainTextToken;
 
         return response()->json([
+            'success' => true,
             'message' => 'Login successful.',
             'token' => $token,
-            'user' => $this->userData($user),
-        ], 200);
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role ?? 'Cashier',
+                'status' => $user->status ?? 'active',
+            ],
+        ]);
     }
 
-    /**
-     * Return the currently authenticated user's details.
-     */
-    public function me(Request $request)
-    {
-        $user = $request->user();
-
-        if (!$user) {
-            return response()->json([
-                'message' => 'Unauthenticated.',
-            ], 401);
-        }
-
-        // Prevent inactive accounts from continuing to use the API.
-        if (!$user->isActive()) {
-            $user->currentAccessToken()?->delete();
-
-            return response()->json([
-                'message' => 'Your account is inactive. Please contact the System Administrator.',
-            ], 403);
-        }
-
-        return response()->json([
-            'user' => $this->userData($user),
-        ], 200);
-    }
-
-    /**
-     * Log out the current user by revoking the current token.
-     */
     public function logout(Request $request)
     {
         $user = $request->user();
 
-        if ($user) {
-            $user->currentAccessToken()?->delete();
+        if ($user && $user->currentAccessToken()) {
+            $user->currentAccessToken()->delete();
         }
 
         return response()->json([
+            'success' => true,
             'message' => 'Logged out successfully.',
-        ], 200);
+        ]);
     }
 
-    /**
-     * Return safe user details for the frontend.
-     *
-     * Never return passwords or authentication tokens here.
-     */
-    private function userData(User $user): array
+    public function me(Request $request)
     {
-        return [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'role' => $user->role,
-            'status' => $user->status,
-        ];
+        return response()->json([
+            'success' => true,
+            'user' => $request->user(),
+        ]);
     }
 }

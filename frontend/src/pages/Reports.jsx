@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import axios from "axios";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import {
     FileText,
     Download,
@@ -9,342 +13,463 @@ import {
     Receipt,
     WalletCards,
     Activity,
-    CheckCircle,
-    Clock,
     AlertCircle,
+    CheckCircle,
+    XCircle,
 } from "lucide-react";
-import axios from "axios";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 
 const API_BASE_URL = "http://127.0.0.1:8000/api";
 const LOGO_URL = "/university-of-abra-logo.png";
 
-function getToday() {
-    return new Date().toISOString().split("T")[0];
-}
-
-function getHeaders() {
-    const token = localStorage.getItem("uniteq_token");
-
-    return {
+const api = axios.create({
+    baseURL: API_BASE_URL,
+    timeout: 20000,
+    headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        ...(token
-            ? {
-                  Authorization: `Bearer ${token}`,
-              }
-            : {}),
-    };
+        "X-Requested-With": "XMLHttpRequest",
+    },
+});
+
+// ============================================================
+// AUTHENTICATION
+// ============================================================
+
+function getAuthToken() {
+    const keys = [
+        "uniteq_token",
+        "access_token",
+        "auth_token",
+        "token",
+    ];
+
+    for (const storage of [localStorage, sessionStorage]) {
+        for (const key of keys) {
+            const value = storage.getItem(key);
+
+            if (value && value.trim()) {
+                return value.replace(/^Bearer\s+/i, "").trim();
+            }
+        }
+    }
+
+    return null;
 }
+
+api.interceptors.request.use((config) => {
+    const token = getAuthToken();
+
+    config.headers = config.headers || {};
+    config.headers.Accept = "application/json";
+    config.headers["X-Requested-With"] = "XMLHttpRequest";
+
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+
+    return config;
+});
+
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
 
 function firstValue(...values) {
     return values.find(
         (value) =>
             value !== undefined &&
             value !== null &&
-            value !== ""
+            String(value).trim() !== ""
     );
 }
 
 function toNumber(value) {
+    if (typeof value === "string") {
+        value = value.replace(/[₱,\s]/g, "");
+    }
+
     const number = Number(value);
     return Number.isFinite(number) ? number : 0;
 }
+
+function extractRecords(response) {
+    let data = response?.data ?? response;
+
+    // Handle arrays, Laravel pagination, and API wrappers.
+    for (let i = 0; i < 8; i++) {
+        if (Array.isArray(data)) {
+            return data;
+        }
+
+        if (!data || typeof data !== "object") {
+            return [];
+        }
+
+        const candidates = [
+            data.data,
+            data.records,
+            data.receipts,
+            data.vouchers,
+            data.results,
+            data.items,
+        ];
+
+        const next = candidates.find(
+            (candidate) =>
+                Array.isArray(candidate) ||
+                (candidate && typeof candidate === "object")
+        );
+
+        if (next === undefined) {
+            break;
+        }
+
+        data = next;
+    }
+
+    console.warn("Unexpected API response format:", response);
+    return [];
+}
+
+function getToday() {
+    const now = new Date();
+    const localDate = new Date(
+        now.getTime() - now.getTimezoneOffset() * 60000
+    );
+
+    return localDate.toISOString().slice(0, 10);
+}
+
+function escapeHTML(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function getDateOnly(value) {
+    if (!value) return "";
+
+    const text = String(value);
+
+    if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+        return text.slice(0, 10);
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    const localDate = new Date(
+        date.getTime() - date.getTimezoneOffset() * 60000
+    );
+
+    return localDate.toISOString().slice(0, 10);
+}
+
+function getNumericSuffix(value) {
+    const match = String(value || "").match(/(\d+)$/);
+    return match ? Number(match[1]) : 0;
+}
+
+// ============================================================
+// REPORTS COMPONENT
+// ============================================================
 
 export default function Reports() {
     const [receipts, setReceipts] = useState([]);
     const [vouchers, setVouchers] = useState([]);
 
     const [loading, setLoading] = useState(true);
-    const [voucherLoading, setVoucherLoading] = useState(false);
+    const [receiptError, setReceiptError] = useState("");
+    const [voucherError, setVoucherError] = useState("");
+    const [lastUpdated, setLastUpdated] = useState(null);
 
     const [search, setSearch] = useState("");
     const [dateFrom, setDateFrom] = useState("");
     const [dateTo, setDateTo] = useState("");
-
     const [appliedFrom, setAppliedFrom] = useState("");
     const [appliedTo, setAppliedTo] = useState("");
 
-    const [lastUpdated, setLastUpdated] = useState(null);
+    // --------------------------------------------------------
+    // LOAD DATA FROM LARAVEL
+    // --------------------------------------------------------
 
-    // =========================================================
-    // LOAD FINANCIAL RECORDS
-    // =========================================================
+    const loadReports = useCallback(async () => {
+        setLoading(true);
+        setReceiptError("");
+        setVoucherError("");
 
-    useEffect(() => {
-        loadReports();
-    }, []);
-
-    async function loadReports() {
         try {
-            setLoading(true);
-
-            const receiptRequest = axios.get(
-                `${API_BASE_URL}/receipts`,
-                {
-                    headers: getHeaders(),
-                }
-            );
-
-            setVoucherLoading(true);
-
-            const voucherRequest = axios.get(
-                `${API_BASE_URL}/vouchers`,
-                {
-                    headers: getHeaders(),
-                }
-            );
-
             const [receiptResult, voucherResult] =
                 await Promise.allSettled([
-                    receiptRequest,
-                    voucherRequest,
+                    api.get("/receipts"),
+                    api.get("/vouchers"),
                 ]);
 
             if (receiptResult.status === "fulfilled") {
-                const response = receiptResult.value;
-
-                const data = Array.isArray(response.data)
-                    ? response.data
-                    : response.data?.data || [];
-
-                setReceipts(data);
-            } else {
-                console.error(
-                    "Receipt loading error:",
-                    receiptResult.reason
+                const records = extractRecords(
+                    receiptResult.value
                 );
 
+                setReceipts(records);
+
+                console.log(
+                    "UniTeq report receipts:",
+                    records
+                );
+            } else {
+                const error = receiptResult.reason;
+
                 setReceipts([]);
+
+                const message =
+                    error.response?.data?.message ||
+                    error.message ||
+                    "Unable to load receipts.";
+
+                setReceiptError(
+                    error.response?.status === 401
+                        ? "Your session may have expired. Please log in again."
+                        : message
+                );
+
+                console.error(
+                    "Receipt API error:",
+                    error.response?.data || error
+                );
             }
 
             if (voucherResult.status === "fulfilled") {
-                const response = voucherResult.value;
-
-                const data = Array.isArray(response.data)
-                    ? response.data
-                    : response.data?.data || [];
-
-                setVouchers(data);
-            } else {
-                console.warn(
-                    "Voucher endpoint could not be loaded. The report will continue using available collection records.",
-                    voucherResult.reason
+                const records = extractRecords(
+                    voucherResult.value
                 );
 
+                setVouchers(records);
+
+                console.log(
+                    "UniTeq report vouchers:",
+                    records
+                );
+            } else {
+                const error = voucherResult.reason;
+
                 setVouchers([]);
+
+                const message =
+                    error.response?.data?.message ||
+                    error.message ||
+                    "Unable to load vouchers.";
+
+                setVoucherError(
+                    error.response?.status === 401
+                        ? "Your session may have expired. Please log in again."
+                        : message
+                );
+
+                console.error(
+                    "Voucher API error:",
+                    error.response?.data || error
+                );
             }
 
             setLastUpdated(new Date());
         } catch (error) {
-            console.error(
-                "Report loading error:",
-                error
+            console.error("Report loading failed:", error);
+
+            setReceiptError(
+                error.message || "Unable to load financial records."
             );
 
-            alert(
-                error.response?.data?.message ||
-                    "Unable to load financial records for the report."
+            setVoucherError(
+                error.message || "Unable to load financial records."
             );
         } finally {
             setLoading(false);
-            setVoucherLoading(false);
         }
-    }
+    }, []);
 
-    // =========================================================
-    // RECEIPT HELPERS
-    // =========================================================
+    useEffect(() => {
+        loadReports();
+    }, [loadReports]);
 
-    function getReceiptNumber(receipt) {
-        return (
-            firstValue(
-                receipt.receipt_number,
-                receipt.receipt_no,
-                receipt.or_number,
-                receipt.or_no
-            ) || `OR-${String(receipt.id || 0).padStart(4, "0")}`
-        );
-    }
+    // --------------------------------------------------------
+    // RECEIPT FIELD HELPERS
+    // --------------------------------------------------------
 
-    function getReceiptDate(receipt) {
+    function getReceiptNumber(record) {
         return firstValue(
-            receipt.date,
-            receipt.collection_date,
-            receipt.payment_date,
-            receipt.created_at
-        );
+            record.receipt_number,
+            record.receipt_no,
+            record.or_number,
+            record.or_no,
+            record.reference_number
+        ) || `OR-${String(record.id || 0).padStart(4, "0")}`;
     }
 
-    function getReceiptPayer(receipt) {
-        return (
-            firstValue(
-                receipt.payer_name,
-                receipt.payer,
-                receipt.student_name,
-                receipt.name
-            ) || "—"
-        );
-    }
-
-    function getReceiptStudentId(receipt) {
-        return (
-            firstValue(
-                receipt.student_id,
-                receipt.studentId,
-                receipt.student_number
-            ) || "—"
-        );
-    }
-
-    function getReceiptPurpose(receipt) {
-        return (
-            firstValue(
-                receipt.purpose,
-                receipt.fee_type,
-                receipt.transaction_type
-            ) || "Collection"
-        );
-    }
-
-    function getReceiptAmount(receipt) {
-        return toNumber(
-            firstValue(
-                receipt.amount,
-                receipt.amount_paid,
-                receipt.collection_amount,
-                receipt.total_amount
-            )
-        );
-    }
-
-    // =========================================================
-    // VOUCHER HELPERS
-    // =========================================================
-
-    function getVoucherNumber(voucher) {
-        return (
-            firstValue(
-                voucher.voucher_number,
-                voucher.voucher_no,
-                voucher.number,
-                voucher.reference_number
-            ) || `V-${String(voucher.id || 0).padStart(4, "0")}`
-        );
-    }
-
-    function getVoucherDate(voucher) {
+    function getReceiptDate(record) {
         return firstValue(
-            voucher.date,
-            voucher.voucher_date,
-            voucher.created_at
+            record.date,
+            record.receipt_date,
+            record.collection_date,
+            record.payment_date,
+            record.created_at
         );
     }
 
-    function getVoucherPayer(voucher) {
-        return (
-            firstValue(
-                voucher.payer_name,
-                voucher.student_name,
-                voucher.beneficiary_name,
-                voucher.payer,
-                voucher.name
-            ) || "—"
-        );
+    function getReceiptPayer(record) {
+        return firstValue(
+            record.payer_name,
+            record.payer,
+            record.student_name,
+            record.customer_name,
+            record.name,
+            record.payor
+        ) || "—";
     }
 
-    function getVoucherStudentId(voucher) {
-        return (
-            firstValue(
-                voucher.student_id,
-                voucher.studentId,
-                voucher.student_number
-            ) || "—"
-        );
+    function getReceiptStudentId(record) {
+        return firstValue(
+            record.student_id,
+            record.studentId,
+            record.student_number,
+            record.student_no
+        ) || "—";
     }
 
-    function getVoucherType(voucher) {
-        return (
-            firstValue(
-                voucher.voucher_type,
-                voucher.type,
-                voucher.purpose
-            ) || "Voucher"
-        );
+    function getReceiptPurpose(record) {
+        return firstValue(
+            record.purpose,
+            record.fee_type,
+            record.transaction_type,
+            record.description,
+            record.particulars
+        ) || "Collection";
     }
 
-    function getVoucherAssignedValue(voucher) {
+    function getReceiptAmount(record) {
         return toNumber(
             firstValue(
-                voucher.assigned_value,
-                voucher.assigned_amount,
-                voucher.amount_due,
-                voucher.total_amount,
-                voucher.amount
+                record.amount,
+                record.amount_paid,
+                record.collection_amount,
+                record.total_amount,
+                record.total,
+                record.total_payment
             )
         );
     }
 
-    function getVoucherRedeemedValue(voucher) {
+    // --------------------------------------------------------
+    // VOUCHER FIELD HELPERS
+    // --------------------------------------------------------
+
+    function getVoucherNumber(record) {
+        return firstValue(
+            record.voucher_number,
+            record.voucher_no,
+            record.number,
+            record.reference_number
+        ) || `V-${String(record.id || 0).padStart(4, "0")}`;
+    }
+
+    function getVoucherDate(record) {
+        return firstValue(
+            record.date,
+            record.voucher_date,
+            record.created_at
+        );
+    }
+
+    function getVoucherPayer(record) {
+        return firstValue(
+            record.payer_name,
+            record.student_name,
+            record.beneficiary_name,
+            record.beneficiary,
+            record.payer,
+            record.name
+        ) || "—";
+    }
+
+    function getVoucherStudentId(record) {
+        return firstValue(
+            record.student_id,
+            record.studentId,
+            record.student_number,
+            record.student_no
+        ) || "—";
+    }
+
+    function getVoucherType(record) {
+        return firstValue(
+            record.voucher_type,
+            record.type,
+            record.purpose
+        ) || "Voucher";
+    }
+
+    function getVoucherAssignedValue(record) {
         return toNumber(
             firstValue(
-                voucher.amount_redeemed,
-                voucher.redeemed_amount,
-                voucher.amount_paid,
-                voucher.redemption_amount
+                record.assigned_value,
+                record.assigned_amount,
+                record.amount_due,
+                record.total_amount,
+                record.amount
             )
         );
     }
 
-    function getVoucherBalance(voucher) {
-        const stored = firstValue(
-            voucher.pending_balance,
-            voucher.remaining_balance,
-            voucher.balance,
-            voucher.current_balance
+    function getVoucherRedeemedValue(record) {
+        return toNumber(
+            firstValue(
+                record.amount_redeemed,
+                record.redeemed_amount,
+                record.amount_paid,
+                record.redemption_amount
+            )
+        );
+    }
+
+    function getVoucherBalance(record) {
+        const storedBalance = firstValue(
+            record.pending_balance,
+            record.remaining_balance,
+            record.balance,
+            record.current_balance
         );
 
-        if (stored !== undefined) {
-            return Math.max(toNumber(stored), 0);
+        if (storedBalance !== undefined) {
+            return Math.max(toNumber(storedBalance), 0);
         }
 
         return Math.max(
-            getVoucherAssignedValue(voucher) -
-                getVoucherRedeemedValue(voucher),
+            getVoucherAssignedValue(record) -
+                getVoucherRedeemedValue(record),
             0
         );
     }
 
-    function getVoucherExpiry(voucher) {
-        return firstValue(
-            voucher.expiry_date,
-            voucher.expiryDate,
-            voucher.expires_at
-        );
-    }
+    // --------------------------------------------------------
+    // FORMATTING
+    // --------------------------------------------------------
 
-    // =========================================================
-    // GENERAL HELPERS
-    // =========================================================
-
-    function formatCurrency(amount) {
+    function formatCurrency(value) {
         return new Intl.NumberFormat("en-PH", {
             style: "currency",
             currency: "PHP",
-        }).format(toNumber(amount));
+        }).format(toNumber(value));
     }
 
     function formatDate(value) {
-        if (!value) {
-            return "—";
-        }
+        if (!value) return "—";
 
         const date = new Date(value);
 
-        if (Number.isNaN(date.getTime())) {
-            return "—";
-        }
+        if (Number.isNaN(date.getTime())) return "—";
 
         return date.toLocaleDateString("en-PH", {
             year: "numeric",
@@ -353,288 +478,246 @@ export default function Reports() {
         });
     }
 
-    function getDateOnly(value) {
-        if (!value) {
-            return "";
+    function getPeriodText() {
+        if (appliedFrom && appliedTo) {
+            return `${formatDate(appliedFrom)} - ${formatDate(appliedTo)}`;
         }
 
-        const text = String(value);
-
-        if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
-            return text.substring(0, 10);
+        if (appliedFrom) {
+            return `From ${formatDate(appliedFrom)}`;
         }
 
-        const date = new Date(value);
-
-        if (Number.isNaN(date.getTime())) {
-            return "";
+        if (appliedTo) {
+            return `Until ${formatDate(appliedTo)}`;
         }
 
-        return date.toISOString().substring(0, 10);
+        return "All Dates";
     }
 
-    function getNumericSuffix(value) {
-        const match = String(value || "").match(/(\d+)$/);
+    // --------------------------------------------------------
+    // FILTERING
+    // --------------------------------------------------------
 
-        return match ? Number(match[1]) : 0;
-    }
-
-    // =========================================================
-    // DATE FILTER
-    // =========================================================
-
-    function isWithinAppliedDateRange(value) {
+    function isWithinDateRange(value) {
         const date = getDateOnly(value);
 
-        if (!date) {
-            return true;
-        }
+        // Keep records whose date is missing rather than
+        // accidentally hiding them because of an unknown date.
+        if (!date) return true;
 
-        if (appliedFrom && date < appliedFrom) {
-            return false;
-        }
-
-        if (appliedTo && date > appliedTo) {
-            return false;
-        }
+        if (appliedFrom && date < appliedFrom) return false;
+        if (appliedTo && date > appliedTo) return false;
 
         return true;
     }
 
-    // =========================================================
-    // FILTERED COLLECTIONS
-    // =========================================================
-
     const filteredReceipts = useMemo(() => {
-        const searchText = search
-            .trim()
-            .toLowerCase();
+        const query = search.trim().toLowerCase();
 
-        return [...receipts]
-            .filter((receipt) => {
-                if (
-                    !isWithinAppliedDateRange(
-                        getReceiptDate(receipt)
+        return receipts
+            .filter((record) => {
+                const date = getDateOnly(
+                    firstValue(
+                        record.date,
+                        record.receipt_date,
+                        record.collection_date,
+                        record.payment_date,
+                        record.created_at
                     )
-                ) {
+                );
+
+                if (date && appliedFrom && date < appliedFrom) {
                     return false;
                 }
 
-                const text = `
-                    ${getReceiptNumber(receipt)}
-                    ${getReceiptPayer(receipt)}
-                    ${getReceiptStudentId(receipt)}
-                    ${getReceiptPurpose(receipt)}
-                    ${receipt.payment_method || ""}
-                    ${receipt.description || ""}
-                `.toLowerCase();
+                if (date && appliedTo && date > appliedTo) {
+                    return false;
+                }
 
-                return text.includes(searchText);
+                const text = [
+                    record.receipt_number,
+                    record.receipt_no,
+                    record.or_number,
+                    record.or_no,
+                    record.reference_number,
+                    record.payer_name,
+                    record.payer,
+                    record.student_name,
+                    record.student_id,
+                    record.student_number,
+                    record.purpose,
+                    record.fee_type,
+                    record.transaction_type,
+                    record.description,
+                    record.payment_method,
+                ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase();
+
+                return text.includes(query);
             })
             .sort(
                 (a, b) =>
-                    getNumericSuffix(
-                        getReceiptNumber(a)
-                    ) -
-                    getNumericSuffix(
-                        getReceiptNumber(b)
-                    )
+                    getNumericSuffix(getReceiptNumber(b)) -
+                    getNumericSuffix(getReceiptNumber(a))
             );
-    }, [
-        receipts,
-        search,
-        appliedFrom,
-        appliedTo,
-    ]);
-
-    // =========================================================
-    // FILTERED VOUCHERS
-    // =========================================================
+    }, [receipts, search, appliedFrom, appliedTo]);
 
     const filteredVouchers = useMemo(() => {
-        const searchText = search
-            .trim()
-            .toLowerCase();
+        const query = search.trim().toLowerCase();
 
-        return [...vouchers]
-            .filter((voucher) => {
-                if (
-                    !isWithinAppliedDateRange(
-                        getVoucherDate(voucher)
+        return vouchers
+            .filter((record) => {
+                const date = getDateOnly(
+                    firstValue(
+                        record.date,
+                        record.voucher_date,
+                        record.created_at
                     )
-                ) {
+                );
+
+                if (date && appliedFrom && date < appliedFrom) {
                     return false;
                 }
 
-                const text = `
-                    ${getVoucherNumber(voucher)}
-                    ${getVoucherPayer(voucher)}
-                    ${getVoucherStudentId(voucher)}
-                    ${getVoucherType(voucher)}
-                    ${voucher.description || ""}
-                `.toLowerCase();
+                if (date && appliedTo && date > appliedTo) {
+                    return false;
+                }
 
-                return text.includes(searchText);
+                const text = [
+                    record.voucher_number,
+                    record.voucher_no,
+                    record.number,
+                    record.reference_number,
+                    record.payer_name,
+                    record.student_name,
+                    record.beneficiary_name,
+                    record.student_id,
+                    record.student_number,
+                    record.voucher_type,
+                    record.type,
+                    record.purpose,
+                    record.description,
+                ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase();
+
+                return text.includes(query);
             })
             .sort(
                 (a, b) =>
-                    getNumericSuffix(
-                        getVoucherNumber(a)
-                    ) -
-                    getNumericSuffix(
-                        getVoucherNumber(b)
-                    )
+                    getNumericSuffix(getVoucherNumber(b)) -
+                    getNumericSuffix(getVoucherNumber(a))
             );
-    }, [
-        vouchers,
-        search,
-        appliedFrom,
-        appliedTo,
-    ]);
+    }, [vouchers, search, appliedFrom, appliedTo]);
 
-    // =========================================================
-    // SUMMARY VALUES
-    // =========================================================
+    // --------------------------------------------------------
+    // SUMMARY CALCULATIONS
+    // --------------------------------------------------------
 
     const totalCollections = filteredReceipts.reduce(
-        (total, receipt) =>
-            total + getReceiptAmount(receipt),
+        (sum, record) => sum + getReceiptAmount(record),
         0
     );
 
     const totalVoucherValue = filteredVouchers.reduce(
-        (total, voucher) =>
-            total +
-            getVoucherAssignedValue(voucher),
+        (sum, record) => sum + getVoucherAssignedValue(record),
         0
     );
 
-    const totalVoucherRedemption =
-        filteredVouchers.reduce(
-            (total, voucher) =>
-                total +
-                getVoucherRedeemedValue(voucher),
-            0
-        );
+    const totalVoucherRedemption = filteredVouchers.reduce(
+        (sum, record) => sum + getVoucherRedeemedValue(record),
+        0
+    );
 
-    const totalVoucherBalance =
-        filteredVouchers.reduce(
-            (total, voucher) =>
-                total +
-                getVoucherBalance(voucher),
-            0
-        );
-
-    const voucherCount = filteredVouchers.length;
+    const totalVoucherBalance = filteredVouchers.reduce(
+        (sum, record) => sum + getVoucherBalance(record),
+        0
+    );
 
     const totalFinancialActivity =
-        totalCollections +
-        totalVoucherRedemption;
+        totalCollections + totalVoucherRedemption;
 
-    const collectionCount =
-        filteredReceipts.length;
-
-    // =========================================================
-    // SIMPLE COLLECTION CATEGORY ANALYSIS
-    // =========================================================
+    const collectionCount = filteredReceipts.length;
+    const voucherCount = filteredVouchers.length;
+    const totalRecordCount = collectionCount + voucherCount;
 
     const categoryAnalysis = useMemo(() => {
         const totals = {};
 
-        filteredReceipts.forEach((receipt) => {
-            const category =
-                getReceiptPurpose(receipt);
+        filteredReceipts.forEach((record) => {
+            const category = firstValue(
+                record.purpose,
+                record.fee_type,
+                record.transaction_type,
+                record.description,
+                record.particulars
+            ) || "Collection";
 
             totals[category] =
                 (totals[category] || 0) +
-                getReceiptAmount(receipt);
+                toNumber(
+                    firstValue(
+                        record.amount,
+                        record.amount_paid,
+                        record.collection_amount,
+                        record.total_amount,
+                        record.total
+                    )
+                );
         });
 
-        const entries = Object.entries(totals)
-            .sort((a, b) => b[1] - a[1]);
+        const entries = Object.entries(totals).sort(
+            (a, b) => b[1] - a[1]
+        );
 
-        const total = entries.reduce(
+        const grandTotal = entries.reduce(
             (sum, [, amount]) => sum + amount,
             0
         );
 
-        return entries
-            .slice(0, 4)
-            .map(([name, amount]) => ({
-                name,
-                amount,
-                percentage:
-                    total > 0
-                        ? (amount / total) * 100
-                        : 0,
-            }));
+        return entries.slice(0, 4).map(([name, amount]) => ({
+            name,
+            amount,
+            percentage:
+                grandTotal > 0 ? (amount / grandTotal) * 100 : 0,
+        }));
     }, [filteredReceipts]);
 
-    const largestCategory =
-        categoryAnalysis[0]?.name || "No data";
-
-    const largestCategoryPercentage =
-        categoryAnalysis[0]?.percentage || 0;
-
-    // =========================================================
-    // RECENT ACTIVITY
-    // =========================================================
-
     const recentActivity = useMemo(() => {
-        const receiptActivities =
-            filteredReceipts.map((receipt) => ({
-                id: `receipt-${receipt.id}`,
-                date:
-                    getReceiptDate(receipt) ||
-                    receipt.created_at,
-                text: `Collection recorded: ${getReceiptNumber(
-                    receipt
-                )}`,
-                detail: getReceiptPayer(receipt),
-                type: "collection",
-            }));
+        const collectionItems = filteredReceipts.map((record) => ({
+            id: `receipt-${record.id ?? getReceiptNumber(record)}`,
+            date: getReceiptDate(record),
+            number: getReceiptNumber(record),
+            name: getReceiptPayer(record),
+            type: "Collection",
+        }));
 
-        const voucherActivities =
-            filteredVouchers.map((voucher) => ({
-                id: `voucher-${voucher.id}`,
-                date:
-                    getVoucherDate(voucher) ||
-                    voucher.created_at,
-                text: `Voucher recorded: ${getVoucherNumber(
-                    voucher
-                )}`,
-                detail: getVoucherPayer(voucher),
-                type: "voucher",
-            }));
+        const voucherItems = filteredVouchers.map((record) => ({
+            id: `voucher-${record.id ?? getVoucherNumber(record)}`,
+            date: getVoucherDate(record),
+            number: getVoucherNumber(record),
+            name: getVoucherPayer(record),
+            type: "Voucher",
+        }));
 
-        return [
-            ...receiptActivities,
-            ...voucherActivities,
-        ]
+        return [...collectionItems, ...voucherItems]
             .sort(
                 (a, b) =>
-                    new Date(b.date || 0) -
-                    new Date(a.date || 0)
+                    new Date(b.date || 0) - new Date(a.date || 0)
             )
             .slice(0, 5);
-    }, [
-        filteredReceipts,
-        filteredVouchers,
-    ]);
+    }, [filteredReceipts, filteredVouchers]);
 
-    // =========================================================
-    // APPLY FILTERS
-    // =========================================================
+    // --------------------------------------------------------
+    // APPLY AND CLEAR FILTERS
+    // --------------------------------------------------------
 
     function applyFilters() {
-        if (
-            dateFrom &&
-            dateTo &&
-            dateFrom > dateTo
-        ) {
-            alert(
-                "Date From cannot be later than Date To."
-            );
+        if (dateFrom && dateTo && dateFrom > dateTo) {
+            alert("Date From cannot be later than Date To.");
             return;
         }
 
@@ -650,97 +733,48 @@ export default function Reports() {
         setAppliedTo("");
     }
 
-    // =========================================================
-    // REPORT PERIOD
-    // =========================================================
+    // --------------------------------------------------------
+    // SHARED REPORT ROWS
+    // --------------------------------------------------------
 
-    function getPeriodText() {
-        if (appliedFrom && appliedTo) {
-            return `${formatDate(
-                appliedFrom
-            )} - ${formatDate(appliedTo)}`;
-        }
+    function getReportRows() {
+        const voucherRows = filteredVouchers.map((record) => [
+            getVoucherPayer(record),
+            getVoucherStudentId(record),
+            getVoucherNumber(record),
+            getVoucherType(record),
+            formatCurrency(getVoucherAssignedValue(record)),
+            formatCurrency(getVoucherRedeemedValue(record)),
+            formatCurrency(getVoucherBalance(record)),
+            formatDate(getVoucherDate(record)),
+        ]);
 
-        if (appliedFrom) {
-            return `From ${formatDate(
-                appliedFrom
-            )}`;
-        }
+        const receiptRows = filteredReceipts.map((record) => [
+            getReceiptPayer(record),
+            getReceiptStudentId(record),
+            getReceiptNumber(record),
+            getReceiptPurpose(record),
+            formatCurrency(getReceiptAmount(record)),
+            formatCurrency(getReceiptAmount(record)),
+            "—",
+            formatDate(getReceiptDate(record)),
+        ]);
 
-        if (appliedTo) {
-            return `Until ${formatDate(
-                appliedTo
-            )}`;
-        }
-
-        return "All Dates";
+        return [...voucherRows, ...receiptRows];
     }
 
-    // =========================================================
-    // LOGO FOR PDF
-    // =========================================================
-
-    function loadLogoAsDataURL() {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-
-            img.crossOrigin = "Anonymous";
-
-            img.onload = () => {
-                try {
-                    const canvas =
-                        document.createElement(
-                            "canvas"
-                        );
-
-                    canvas.width =
-                        img.naturalWidth;
-
-                    canvas.height =
-                        img.naturalHeight;
-
-                    const context =
-                        canvas.getContext("2d");
-
-                    context.drawImage(
-                        img,
-                        0,
-                        0
-                    );
-
-                    resolve(
-                        canvas.toDataURL(
-                            "image/png"
-                        )
-                    );
-                } catch (error) {
-                    reject(error);
-                }
-            };
-
-            img.onerror = () =>
-                reject(
-                    new Error(
-                        "Logo could not be loaded."
-                    )
-                );
-
-            img.src =
-                `${LOGO_URL}?v=${Date.now()}`;
-        });
+    function hasRecords() {
+        return filteredReceipts.length > 0 || filteredVouchers.length > 0;
     }
 
-    // =========================================================
-    // PDF REPORT
-    // =========================================================
+    // --------------------------------------------------------
+    // EXPORT PDF
+    // --------------------------------------------------------
 
     async function exportPDF() {
-        if (
-            filteredReceipts.length === 0 &&
-            filteredVouchers.length === 0
-        ) {
+        if (!hasRecords()) {
             alert(
-                "There are no records to export."
+                "There are no records to export. Refresh the page and check whether receipts and vouchers have loaded."
             );
             return;
         }
@@ -752,137 +786,61 @@ export default function Reports() {
                 format: "a4",
             });
 
+            // The report still works if the logo is unavailable.
             try {
-                const logo =
-                    await loadLogoAsDataURL();
+                const logoResponse = await fetch(LOGO_URL);
 
-                doc.addImage(
-                    logo,
-                    "PNG",
-                    137,
-                    7,
-                    22,
-                    22
-                );
+                if (logoResponse.ok) {
+                    const blob = await logoResponse.blob();
+
+                    const dataUrl = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+
+                        reader.onload = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+
+                    doc.addImage(dataUrl, "PNG", 137, 7, 22, 22);
+                }
             } catch (error) {
-                console.warn(
-                    "Logo could not be added:",
-                    error
-                );
+                console.warn("Logo was not added to the PDF:", error);
             }
 
-            doc.setFont(
-                "helvetica",
-                "bold"
-            );
-
+            doc.setFont("helvetica", "bold");
             doc.setFontSize(16);
-
-            doc.text(
-                "UNIVERSITY OF ABRA",
-                148,
-                35,
-                { align: "center" }
-            );
+            doc.text("UNIVERSITY OF ABRA", 148.5, 35, {
+                align: "center",
+            });
 
             doc.setFontSize(12);
+            doc.text("Main Campus Cashier's Unit", 148.5, 42, {
+                align: "center",
+            });
 
-            doc.text(
-                "Main Campus Cashier's Unit",
-                148,
-                42,
-                { align: "center" }
-            );
-
-            doc.setFont(
-                "helvetica",
-                "normal"
-            );
-
+            doc.setFont("helvetica", "normal");
             doc.setFontSize(9);
+            doc.text("UniTeq Financial Management System", 148.5, 48, {
+                align: "center",
+            });
 
-            doc.text(
-                "UniTeq Financial Management System",
-                148,
-                48,
-                { align: "center" }
-            );
-
-            doc.setFont(
-                "helvetica",
-                "bold"
-            );
-
-            doc.setFontSize(14);
-
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(13);
             doc.text(
                 "CONSOLIDATED COLLECTION & VOUCHER REPORT",
-                148,
-                59,
+                148.5,
+                58,
                 { align: "center" }
             );
 
-            doc.setFont(
-                "helvetica",
-                "normal"
-            );
-
+            doc.setFont("helvetica", "normal");
             doc.setFontSize(9);
-
-            doc.text(
-                `Report Period: ${getPeriodText()}`,
-                148,
-                66,
-                { align: "center" }
-            );
-
-            const tableRows = [
-                ...filteredVouchers.map(
-                    (voucher) => [
-                        getVoucherPayer(voucher),
-                        getVoucherStudentId(
-                            voucher
-                        ),
-                        getVoucherNumber(voucher),
-                        getVoucherType(voucher),
-                        formatCurrency(
-                            getVoucherAssignedValue(
-                                voucher
-                            )
-                        ),
-                        formatCurrency(
-                            getVoucherRedeemedValue(
-                                voucher
-                            )
-                        ),
-                        formatCurrency(
-                            getVoucherBalance(
-                                voucher
-                            )
-                        ),
-                    ]
-                ),
-                ...filteredReceipts.map(
-                    (receipt) => [
-                        getReceiptPayer(receipt),
-                        getReceiptStudentId(
-                            receipt
-                        ),
-                        getReceiptNumber(receipt),
-                        getReceiptPurpose(receipt),
-                        "Collection",
-                        formatCurrency(
-                            getReceiptAmount(
-                                receipt
-                            )
-                        ),
-                        "—",
-                    ]
-                ),
-            ];
+            doc.text(`Report Period: ${getPeriodText()}`, 148.5, 65, {
+                align: "center",
+            });
 
             autoTable(doc, {
-                startY: 74,
+                startY: 72,
                 head: [[
                     "Payer Name",
                     "Student ID",
@@ -891,163 +849,128 @@ export default function Reports() {
                     "Assigned / Amount",
                     "Collected / Redeemed",
                     "Pending Balance",
+                    "Date",
                 ]],
-                body: tableRows,
+                body: getReportRows(),
                 theme: "grid",
                 styles: {
                     fontSize: 7,
-                    cellPadding: 2.5,
+                    cellPadding: 2.2,
                     valign: "middle",
                 },
                 headStyles: {
                     fontStyle: "bold",
+                    fillColor: [16, 45, 85],
                 },
+                margin: { left: 10, right: 10 },
             });
 
-            const finalY =
-                doc.lastAutoTable.finalY +
-                8;
+            let finalY = (doc.lastAutoTable?.finalY || 80) + 8;
 
-            doc.setFont(
-                "helvetica",
-                "bold"
-            );
+            if (finalY > 185) {
+                doc.addPage();
+                finalY = 20;
+            }
 
-            doc.setFontSize(10);
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(9);
 
             doc.text(
-                `TOTAL COLLECTIONS: ${formatCurrency(
-                    totalCollections
-                )}`,
+                `Total Collections: ${formatCurrency(totalCollections)}`,
                 14,
                 finalY
             );
 
             doc.text(
-                `VOUCHER BALANCES: ${formatCurrency(
-                    totalVoucherBalance
-                )}`,
-                148,
-                finalY,
-                { align: "center" }
+                `Total Voucher Value: ${formatCurrency(totalVoucherValue)}`,
+                110,
+                finalY
             );
 
             doc.text(
-                `TOTAL VOUCHER VALUE: ${formatCurrency(
-                    totalVoucherValue
-                )}`,
-                283,
-                finalY,
-                { align: "right" }
+                `Pending Voucher Balance: ${formatCurrency(totalVoucherBalance)}`,
+                220,
+                finalY
             );
 
-            doc.setFont(
-                "helvetica",
-                "normal"
-            );
-
+            doc.setFont("helvetica", "normal");
             doc.setFontSize(8);
 
             doc.text(
-                `Generated: ${new Date().toLocaleString(
-                    "en-PH"
-                )}`,
+                `Generated: ${new Date().toLocaleString("en-PH")}`,
                 14,
                 202
             );
 
             doc.text(
-                "Property of University of Abra - Internal Financial System",
+                "University of Abra - Internal Financial System",
                 283,
                 202,
                 { align: "right" }
             );
 
             doc.save(
-                `University-of-Abra-Consolidated-Report-${getToday()}.pdf`
+                `University-of-Abra-Financial-Report-${getToday()}.pdf`
             );
         } catch (error) {
-            console.error(
-                "PDF generation error:",
-                error
-            );
+            console.error("PDF generation failed:", error);
 
             alert(
-                "Unable to generate the PDF report."
+                "Unable to generate the PDF. Check the browser console for details."
             );
         }
     }
 
-    // =========================================================
+    // --------------------------------------------------------
     // PRINT REPORT
-    // =========================================================
+    // --------------------------------------------------------
 
     function printReport() {
-        if (
-            filteredReceipts.length === 0 &&
-            filteredVouchers.length === 0
-        ) {
+        if (!hasRecords()) {
             alert(
-                "There are no records to print."
+                "There are no records to print. Click Refresh. If the table is empty, check the API errors displayed on this page."
             );
             return;
         }
 
-        const rows = [
-            ...filteredVouchers.map(
-                (voucher) => `
+        const rows = getReportRows()
+            .map(
+                (row) => `
                     <tr>
-                        <td>${getVoucherPayer(voucher)}</td>
-                        <td>${getVoucherStudentId(voucher)}</td>
-                        <td>${getVoucherNumber(voucher)}</td>
-                        <td>${getVoucherType(voucher)}</td>
-                        <td>${formatCurrency(
-                            getVoucherAssignedValue(
-                                voucher
+                        ${row
+                            .map(
+                                (cell) =>
+                                    `<td>${escapeHTML(cell)}</td>`
                             )
-                        )}</td>
-                        <td>${formatCurrency(
-                            getVoucherRedeemedValue(
-                                voucher
-                            )
-                        )}</td>
-                        <td>${formatCurrency(
-                            getVoucherBalance(
-                                voucher
-                            )
-                        )}</td>
+                            .join("")}
                     </tr>
                 `
-            ),
-            ...filteredReceipts.map(
-                (receipt) => `
-                    <tr>
-                        <td>${getReceiptPayer(receipt)}</td>
-                        <td>${getReceiptStudentId(receipt)}</td>
-                        <td>${getReceiptNumber(receipt)}</td>
-                        <td>${getReceiptPurpose(receipt)}</td>
-                        <td>Collection</td>
-                        <td>${formatCurrency(
-                            getReceiptAmount(
-                                receipt
-                            )
-                        )}</td>
-                        <td>—</td>
-                    </tr>
-                `
-            ),
-        ].join("");
+            )
+            .join("");
 
-        const printContent = `
+        const printWindow = window.open(
+            "",
+            "_blank",
+            "width=1200,height=800"
+        );
+
+        if (!printWindow) {
+            alert(
+                "Your browser blocked the print window. Allow pop-ups for the UniTeq website and try again."
+            );
+            return;
+        }
+
+        const html = `
             <!DOCTYPE html>
             <html>
             <head>
+                <meta charset="UTF-8" />
                 <title>University of Abra Financial Report</title>
-
                 <style>
                     @page {
                         size: landscape;
-                        margin: 10mm;
+                        margin: 12mm;
                     }
 
                     * {
@@ -1058,71 +981,64 @@ export default function Reports() {
                         font-family: Arial, Helvetica, sans-serif;
                         color: #111827;
                         margin: 0;
-                        padding: 15px;
+                        padding: 12px;
                     }
 
                     .header {
                         text-align: center;
-                        margin-bottom: 18px;
+                        margin-bottom: 20px;
                     }
 
                     .logo {
-                        width: 70px;
-                        height: 70px;
+                        width: 65px;
+                        height: 65px;
                         object-fit: contain;
                     }
 
-                    .university {
+                    h1 {
                         font-size: 22px;
-                        font-weight: 800;
+                        margin: 5px 0;
+                    }
+
+                    h2 {
+                        font-size: 15px;
                         margin: 4px 0;
                     }
 
-                    .unit {
-                        font-size: 15px;
-                        font-weight: 700;
-                        margin: 3px 0;
-                    }
-
-                    .system {
-                        font-size: 11px;
-                        color: #64748b;
-                        margin: 3px 0;
-                    }
-
-                    .title {
-                        font-size: 18px;
-                        font-weight: 800;
-                        margin: 14px 0 4px;
-                    }
-
+                    .system,
                     .period {
                         font-size: 11px;
-                        color: #64748b;
+                        color: #475569;
+                        margin: 5px 0;
+                    }
+
+                    .report-title {
+                        font-size: 17px;
+                        font-weight: bold;
+                        margin-top: 15px;
                     }
 
                     .summary {
-                        display: flex;
+                        display: grid;
+                        grid-template-columns: repeat(3, 1fr);
                         gap: 12px;
-                        margin: 15px 0;
+                        margin: 18px 0;
                     }
 
                     .summary-card {
-                        flex: 1;
-                        border: 1px solid #dbe3ea;
-                        border-radius: 8px;
+                        border: 1px solid #cbd5e1;
                         padding: 10px;
                     }
 
                     .summary-label {
-                        font-size: 10px;
                         color: #64748b;
+                        font-size: 10px;
                     }
 
                     .summary-value {
                         font-size: 15px;
-                        font-weight: 800;
-                        margin-top: 4px;
+                        font-weight: bold;
+                        margin-top: 5px;
                     }
 
                     table {
@@ -1131,89 +1047,74 @@ export default function Reports() {
                         margin-top: 12px;
                     }
 
-                    th,
-                    td {
+                    th, td {
                         border: 1px solid #cbd5e1;
                         padding: 6px;
                         font-size: 9px;
+                        text-align: left;
+                        overflow-wrap: anywhere;
                     }
 
                     th {
                         background: #eef4f8;
-                        font-weight: 800;
                     }
 
                     .footer {
                         display: flex;
                         justify-content: space-between;
+                        gap: 20px;
                         margin-top: 20px;
                         font-size: 9px;
                         color: #64748b;
                     }
+
+                    @media print {
+                        body {
+                            padding: 0;
+                        }
+
+                        thead {
+                            display: table-header-group;
+                        }
+
+                        tr {
+                            break-inside: avoid;
+                        }
+                    }
                 </style>
             </head>
-
             <body>
                 <div class="header">
                     <img
                         src="${LOGO_URL}"
                         class="logo"
-                        alt="University of Abra"
+                        alt="University of Abra logo"
+                        onerror="this.style.display='none'"
                     />
 
-                    <div class="university">
-                        UNIVERSITY OF ABRA
-                    </div>
-
-                    <div class="unit">
-                        Main Campus Cashier's Unit
-                    </div>
-
-                    <div class="system">
-                        UniTeq Financial Management System
-                    </div>
-
-                    <div class="title">
+                    <h1>UNIVERSITY OF ABRA</h1>
+                    <h2>Main Campus Cashier's Unit</h2>
+                    <div class="system">UniTeq Financial Management System</div>
+                    <div class="report-title">
                         CONSOLIDATED COLLECTION & VOUCHER REPORT
                     </div>
-
                     <div class="period">
-                        Report Period: ${getPeriodText()}
+                        Report Period: ${escapeHTML(getPeriodText())}
                     </div>
                 </div>
 
                 <div class="summary">
                     <div class="summary-card">
-                        <div class="summary-label">
-                            Total Collections
-                        </div>
-                        <div class="summary-value">
-                            ${formatCurrency(
-                                totalCollections
-                            )}
-                        </div>
+                        <div class="summary-label">Total Collections</div>
+                        <div class="summary-value">${escapeHTML(formatCurrency(totalCollections))}</div>
                     </div>
-
                     <div class="summary-card">
-                        <div class="summary-label">
-                            Total Voucher Value
-                        </div>
-                        <div class="summary-value">
-                            ${formatCurrency(
-                                totalVoucherValue
-                            )}
-                        </div>
+                        <div class="summary-label">Total Voucher Value</div>
+                        <div class="summary-value">${escapeHTML(formatCurrency(totalVoucherValue))}</div>
                     </div>
-
                     <div class="summary-card">
-                        <div class="summary-label">
-                            Voucher Pending Balance
-                        </div>
-                        <div class="summary-value">
-                            ${formatCurrency(
-                                totalVoucherBalance
-                            )}
-                        </div>
+                        <div class="summary-label">Pending Voucher Balance</div>
+                        <div class="summary-value">${escapeHTML(formatCurrency(totalVoucherBalance))}</div>
                     </div>
                 </div>
 
@@ -1227,347 +1128,234 @@ export default function Reports() {
                             <th>Assigned / Amount</th>
                             <th>Collected / Redeemed</th>
                             <th>Pending Balance</th>
+                            <th>Date</th>
                         </tr>
                     </thead>
-
-                    <tbody>
-                        ${rows}
-                    </tbody>
+                    <tbody>${rows}</tbody>
                 </table>
 
                 <div class="footer">
-                    <span>
-                        Generated:
-                        ${new Date().toLocaleString(
-                            "en-PH"
-                        )}
-                    </span>
-
-                    <span>
-                        Property of University of Abra - Internal Financial System
-                    </span>
+                    <span>Generated: ${escapeHTML(new Date().toLocaleString("en-PH"))}</span>
+                    <span>University of Abra - Internal Financial System</span>
                 </div>
+
+                <script>
+                    window.onload = function () {
+                        setTimeout(function () {
+                            window.focus();
+                            window.print();
+                        }, 400);
+                    };
+                </script>
             </body>
             </html>
         `;
 
-        const iframe =
-            document.createElement("iframe");
-
-        iframe.style.position = "fixed";
-        iframe.style.right = "0";
-        iframe.style.bottom = "0";
-        iframe.style.width = "0";
-        iframe.style.height = "0";
-        iframe.style.border = "0";
-
-        document.body.appendChild(iframe);
-
-        const iframeDocument =
-            iframe.contentWindow.document;
-
-        iframeDocument.open();
-        iframeDocument.write(printContent);
-        iframeDocument.close();
-
-        iframe.onload = () => {
-            setTimeout(() => {
-                iframe.contentWindow.focus();
-                iframe.contentWindow.print();
-
-                setTimeout(() => {
-                    if (
-                        document.body.contains(
-                            iframe
-                        )
-                    ) {
-                        document.body.removeChild(
-                            iframe
-                        );
-                    }
-                }, 1000);
-            }, 500);
-        };
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
     }
 
-    // =========================================================
-    // STATUS / ACTIVITY ICON
-    // =========================================================
+    // --------------------------------------------------------
+    // REUSABLE UI COMPONENTS
+    // --------------------------------------------------------
 
-    function getActivityIcon(type) {
-        if (type === "voucher") {
-            return (
-                <WalletCards
-                    size={15}
-                />
-            );
-        }
+    function SummaryCard({ title, value, detail, icon, color = "blue" }) {
+        const colorClasses = {
+            blue: "bg-blue-50 text-[#102d55]",
+            cyan: "bg-cyan-50 text-[#0797a6]",
+            red: "bg-red-50 text-red-600",
+            green: "bg-green-50 text-green-700",
+        };
 
         return (
-            <Receipt size={15} />
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                        <p className="text-sm text-gray-500">{title}</p>
+                        <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mt-2 break-words">
+                            {value}
+                        </h2>
+                        <p className="text-xs text-gray-500 mt-2">{detail}</p>
+                    </div>
+
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${colorClasses[color]}`}>
+                        {icon}
+                    </div>
+                </div>
+            </div>
         );
     }
 
-    // =========================================================
-    // RENDER
-    // =========================================================
+    // --------------------------------------------------------
+    // MAIN RENDER
+    // --------------------------------------------------------
 
     return (
         <div className="min-h-screen bg-[#f5f7fa]">
-
-            {/* =================================================
-                HEADER
-            ================================================= */}
-
-            <div className="bg-[#102d55] text-white">
-
+            <header className="bg-[#102d55] text-white">
                 <div className="max-w-[1500px] mx-auto px-6 py-7">
-
                     <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-5">
-
-                        <div className="flex items-center gap-5">
-
-                            <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-lg">
-
-                                <FileText
-                                    size={32}
-                                    className="text-[#102d55]"
-                                />
-
+                        <div className="flex items-center gap-4">
+                            <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shrink-0">
+                                <FileText size={32} className="text-[#102d55]" />
                             </div>
 
                             <div>
-
                                 <p className="text-sm text-blue-100">
-                                    University of Abra | Main Campus
-                                    <span className="mx-2">
-                                        •
-                                    </span>
-                                    Cashier's Unit
+                                    University of Abra | Main Campus | Cashier's Unit
                                 </p>
-
                                 <h1 className="text-3xl sm:text-4xl font-bold mt-1">
-                                    Financial Reports Page
+                                    Financial Reports
                                 </h1>
-
                                 <p className="text-blue-100 mt-2">
                                     Consolidated collection and voucher monitoring.
                                 </p>
-
                             </div>
-
                         </div>
 
                         <div className="flex flex-wrap gap-3">
-
                             <button
                                 type="button"
                                 onClick={loadReports}
                                 disabled={loading}
-                                className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl border-2 border-white/80 hover:bg-white hover:text-[#102d55] transition font-semibold disabled:opacity-50"
+                                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border-2 border-white/80 hover:bg-white hover:text-[#102d55] font-semibold disabled:opacity-50"
                             >
-
-                                <RefreshCw
-                                    size={18}
-                                    className={
-                                        loading
-                                            ? "animate-spin"
-                                            : ""
-                                    }
-                                />
-
+                                <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
                                 Refresh
-
                             </button>
 
                             <button
                                 type="button"
                                 onClick={printReport}
                                 disabled={loading}
-                                className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-white text-[#102d55] hover:bg-blue-50 transition font-semibold disabled:opacity-50"
+                                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-white text-[#102d55] hover:bg-blue-50 font-semibold disabled:opacity-50"
                             >
-
-                                <Printer
-                                    size={18}
-                                />
-
+                                <Printer size={18} />
                                 Print Report
-
                             </button>
 
                             <button
                                 type="button"
                                 onClick={exportPDF}
                                 disabled={loading}
-                                className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white transition font-semibold disabled:opacity-50"
+                                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white font-semibold disabled:opacity-50"
                             >
-
-                                <Download
-                                    size={18}
-                                />
-
+                                <Download size={18} />
                                 Export PDF
-
                             </button>
-
                         </div>
-
                     </div>
-
                 </div>
-
-            </div>
-
-            {/* =================================================
-                MAIN
-            ================================================= */}
+            </header>
 
             <main className="max-w-[1500px] mx-auto px-6 py-8 space-y-7">
+                {(receiptError || voucherError) && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-2">
+                        <div className="flex items-center gap-2 font-bold text-red-800">
+                            <XCircle size={20} />
+                            Some report records could not be loaded
+                        </div>
 
-                {/* =================================================
-                    REPORT TITLE
-                ================================================= */}
+                        {receiptError && (
+                            <p className="text-sm text-red-700">
+                                <strong>Receipts:</strong> {receiptError}
+                            </p>
+                        )}
 
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                        {voucherError && (
+                            <p className="text-sm text-red-700">
+                                <strong>Vouchers:</strong> {voucherError}
+                            </p>
+                        )}
 
+                        <p className="text-sm text-red-700">
+                            Check your login session, Laravel server, and API response.
+                            Records from a failed request cannot appear in the report.
+                        </p>
+                    </div>
+                )}
+
+                <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
                     <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-
                         <div>
-
-                            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">
+                            <h2 className="text-2xl font-bold text-gray-900">
                                 Consolidated Collection & Voucher Report
                             </h2>
-
                             <p className="text-sm text-gray-500 mt-2">
                                 University of Abra — Cashier's Unit
                             </p>
-
                         </div>
 
                         <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#102d55] text-white text-sm font-semibold">
-
-                            <CalendarDays
-                                size={17}
-                            />
-
+                            <CalendarDays size={17} />
                             {getToday()}
-
                         </div>
-
                     </div>
+                </section>
 
-                </div>
-
-                {/* =================================================
-                    FILTERS
-                ================================================= */}
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
+                <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
                     <div className="flex items-center gap-3 mb-5">
-
-                        <div className="w-11 h-11 rounded-xl bg-blue-50 flex items-center justify-center">
-
-                            <Search
-                                size={21}
-                                className="text-[#102d55]"
-                            />
-
-                        </div>
-
+                        <Search size={22} className="text-[#102d55]" />
                         <div>
-
                             <h3 className="text-lg font-bold text-gray-900">
                                 Report Filters
                             </h3>
-
                             <p className="text-sm text-gray-500">
-                                Select a date range and search the report records.
+                                Search records and select a date range.
                             </p>
-
                         </div>
-
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
-
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-
                             <label className="block text-sm font-semibold text-gray-700 mb-2">
                                 Date From
                             </label>
-
                             <input
                                 type="date"
                                 value={dateFrom}
-                                onChange={(e) =>
-                                    setDateFrom(
-                                        e.target.value
-                                    )
-                                }
-                                className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] focus:border-[#0797a6]"
+                                onChange={(event) => setDateFrom(event.target.value)}
+                                className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                             />
-
                         </div>
 
                         <div>
-
                             <label className="block text-sm font-semibold text-gray-700 mb-2">
                                 Date To
                             </label>
-
                             <input
                                 type="date"
                                 value={dateTo}
-                                onChange={(e) =>
-                                    setDateTo(
-                                        e.target.value
-                                    )
-                                }
-                                className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] focus:border-[#0797a6]"
+                                onChange={(event) => setDateTo(event.target.value)}
+                                className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                             />
-
                         </div>
 
-                        <div className="md:col-span-2 xl:col-span-2">
-
+                        <div>
                             <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                Search
+                                Search Records
                             </label>
-
                             <div className="relative">
-
-                                <Search
-                                    size={18}
-                                    className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
-                                />
-
+                                <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
                                 <input
                                     type="text"
                                     value={search}
-                                    onChange={(e) =>
-                                        setSearch(
-                                            e.target.value
-                                        )
-                                    }
-                                    placeholder="Search payer, student ID, receipt, voucher, or type..."
-                                    className="w-full border border-gray-300 rounded-xl pl-11 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] focus:border-[#0797a6]"
+                                    onChange={(event) => setSearch(event.target.value)}
+                                    placeholder="Payer, student ID, receipt, voucher..."
+                                    className="w-full border border-gray-300 rounded-xl pl-11 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                 />
-
                             </div>
-
                         </div>
-
                     </div>
 
                     <div className="flex flex-wrap justify-end gap-3 mt-5">
-
                         <button
                             type="button"
                             onClick={clearFilters}
                             className="px-5 py-3 rounded-xl border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50"
                         >
-                            Clear
+                            Clear Filters
                         </button>
 
                         <button
@@ -1575,918 +1363,364 @@ export default function Reports() {
                             onClick={applyFilters}
                             className="px-6 py-3 rounded-xl bg-[#0797a6] text-white font-semibold hover:bg-[#067f8b]"
                         >
-                            Apply
+                            Apply Date Range
                         </button>
-
                     </div>
 
-                </div>
+                    <p className="text-xs text-gray-500 mt-4">
+                        Active period: {getPeriodText()}
+                    </p>
+                </section>
 
-                {/* =================================================
-                    SUMMARY CARDS
-                ================================================= */}
+                <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+                    <SummaryCard
+                        title="Total Collections"
+                        value={formatCurrency(totalCollections)}
+                        detail={`${collectionCount} collection record${collectionCount === 1 ? "" : "s"}`}
+                        icon={<Receipt size={24} />}
+                        color="blue"
+                    />
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+                    <SummaryCard
+                        title="Total Voucher Value"
+                        value={formatCurrency(totalVoucherValue)}
+                        detail={`${voucherCount} voucher record${voucherCount === 1 ? "" : "s"}`}
+                        icon={<WalletCards size={24} />}
+                        color="cyan"
+                    />
 
+                    <SummaryCard
+                        title="Voucher Pending Balance"
+                        value={formatCurrency(totalVoucherBalance)}
+                        detail="Remaining voucher allocation"
+                        icon={<AlertCircle size={24} />}
+                        color="red"
+                    />
+
+                    <SummaryCard
+                        title="Total Financial Activity"
+                        value={formatCurrency(totalFinancialActivity)}
+                        detail="Collections plus voucher redemptions"
+                        icon={<Activity size={24} />}
+                        color="green"
+                    />
+                </section>
+
+                <section className="grid grid-cols-1 xl:grid-cols-3 gap-5">
                     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Collections
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55] mt-2">
-                                    {formatCurrency(
-                                        totalCollections
-                                    )}
-                                </h2>
-
-                                <p className="text-xs text-gray-500 mt-2">
-                                    {collectionCount} collection record
-                                    {collectionCount === 1
-                                        ? ""
-                                        : "s"}
-                                </p>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center">
-
-                                <Receipt
-                                    size={24}
-                                    className="text-[#102d55]"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Voucher Value
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#0797a6] mt-2">
-                                    {formatCurrency(
-                                        totalVoucherValue
-                                    )}
-                                </h2>
-
-                                <p className="text-xs text-gray-500 mt-2">
-                                    {voucherCount} voucher record
-                                    {voucherCount === 1
-                                        ? ""
-                                        : "s"}
-                                </p>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-cyan-50 flex items-center justify-center">
-
-                                <WalletCards
-                                    size={24}
-                                    className="text-[#0797a6]"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Voucher Pending Balance
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-red-600 mt-2">
-                                    {formatCurrency(
-                                        totalVoucherBalance
-                                    )}
-                                </h2>
-
-                                <p className="text-xs text-gray-500 mt-2">
-                                    Amount still available for redemption
-                                </p>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-red-50 flex items-center justify-center">
-
-                                <AlertCircle
-                                    size={24}
-                                    className="text-red-600"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Financial Activity
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55] mt-2">
-                                    {formatCurrency(
-                                        totalFinancialActivity
-                                    )}
-                                </h2>
-
-                                <p className="text-xs text-gray-500 mt-2">
-                                    Collections + voucher redemptions
-                                </p>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center">
-
-                                <Activity
-                                    size={24}
-                                    className="text-[#102d55]"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-                {/* =================================================
-                    ANALYSIS + ACTIVITY + TOOLS
-                ================================================= */}
-
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-
-                    {/* COLLECTION ANALYSIS */}
-
-                    <div className="xl:col-span-1 bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
                         <h3 className="text-xl font-bold text-gray-900">
-                            Total Collection Analysis
+                            Collection Analysis
                         </h3>
-
                         <p className="text-sm text-gray-500 mt-1">
                             Collection distribution by fee type.
                         </p>
 
-                        <div className="flex items-center gap-6 mt-6">
+                        <div className="space-y-4 mt-6">
+                            {categoryAnalysis.length === 0 ? (
+                                <p className="text-sm text-gray-500">
+                                    No collection category data available.
+                                </p>
+                            ) : (
+                                categoryAnalysis.map((category, index) => (
+                                    <div key={category.name}>
+                                        <div className="flex justify-between gap-3 text-sm mb-2">
+                                            <span className="font-semibold text-gray-800">
+                                                {category.name}
+                                            </span>
+                                            <span className="text-gray-500">
+                                                {category.percentage.toFixed(1)}%
+                                            </span>
+                                        </div>
 
-                            <div
-                                className="w-36 h-36 rounded-full flex-shrink-0"
-                                style={{
-                                    background:
-                                        categoryAnalysis.length
-                                            ? `conic-gradient(
-                                                #102d55 0% ${categoryAnalysis[0]?.percentage || 0}%,
-                                                #0797a6 ${categoryAnalysis[0]?.percentage || 0}% ${(categoryAnalysis[0]?.percentage || 0) + (categoryAnalysis[1]?.percentage || 0)}%,
-                                                #7aa7a8 ${(categoryAnalysis[0]?.percentage || 0) + (categoryAnalysis[1]?.percentage || 0)}% ${(categoryAnalysis[0]?.percentage || 0) + (categoryAnalysis[1]?.percentage || 0) + (categoryAnalysis[2]?.percentage || 0)}%,
-                                                #cbd5e1 ${(categoryAnalysis[0]?.percentage || 0) + (categoryAnalysis[1]?.percentage || 0) + (categoryAnalysis[2]?.percentage || 0)}% 100%
-                                            )`
-                                            : "#e5e7eb",
-                                }}
-                            />
-
-                            <div className="space-y-3 min-w-0">
-
-                                {categoryAnalysis.length === 0 ? (
-
-                                    <p className="text-sm text-gray-500">
-                                        No collection data available.
-                                    </p>
-
-                                ) : (
-
-                                    categoryAnalysis.map(
-                                        (
-                                            category,
-                                            index
-                                        ) => (
-
+                                        <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
                                             <div
-                                                key={
-                                                    category.name
-                                                }
-                                                className="flex items-start gap-2"
-                                            >
+                                                className={`h-full rounded-full ${
+                                                    index === 0
+                                                        ? "bg-[#102d55]"
+                                                        : index === 1
+                                                        ? "bg-[#0797a6]"
+                                                        : index === 2
+                                                        ? "bg-teal-400"
+                                                        : "bg-gray-400"
+                                                }`}
+                                                style={{
+                                                    width: `${Math.min(category.percentage, 100)}%`,
+                                                }}
+                                            />
+                                        </div>
 
-                                                <span
-                                                    className={`w-3 h-3 rounded-sm mt-1 flex-shrink-0 ${
-                                                        index ===
-                                                        0
-                                                            ? "bg-[#102d55]"
-                                                            : index ===
-                                                              1
-                                                            ? "bg-[#0797a6]"
-                                                            : index ===
-                                                              2
-                                                            ? "bg-[#7aa7a8]"
-                                                            : "bg-gray-300"
-                                                    }`}
-                                                />
-
-                                                <div className="min-w-0">
-
-                                                    <p className="text-sm font-semibold text-gray-800 truncate">
-                                                        {category.name}
-                                                    </p>
-
-                                                    <p className="text-xs text-gray-500">
-                                                        {category.percentage.toFixed(
-                                                            0
-                                                        )}
-                                                        %
-                                                    </p>
-
-                                                </div>
-
-                                            </div>
-
-                                        )
-                                    )
-
-                                )}
-
-                            </div>
-
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {formatCurrency(category.amount)}
+                                        </p>
+                                    </div>
+                                ))
+                            )}
                         </div>
-
-                        <div className="mt-6">
-
-                            <p className="text-sm text-gray-500">
-                                Total Collections
-                            </p>
-
-                            <p className="text-3xl font-bold text-[#102d55] mt-1">
-                                {formatCurrency(
-                                    totalCollections
-                                )}
-                            </p>
-
-                            <p className="text-sm text-gray-500 mt-2">
-                                Largest category:{" "}
-                                <span className="font-semibold text-gray-800">
-                                    {largestCategory}
-                                </span>{" "}
-                                ({largestCategoryPercentage.toFixed(
-                                    0
-                                )}
-                                %)
-                            </p>
-
-                        </div>
-
                     </div>
-
-                    {/* VOUCHER SUMMARY */}
 
                     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center gap-3">
-
-                            <div className="w-11 h-11 rounded-xl bg-cyan-50 flex items-center justify-center">
-
-                                <WalletCards
-                                    size={22}
-                                    className="text-[#0797a6]"
-                                />
-
-                            </div>
-
-                            <div>
-
-                                <h3 className="text-xl font-bold text-gray-900">
-                                    Total Voucher Balances & Expiry
-                                </h3>
-
-                                <p className="text-sm text-gray-500">
-                                    Current voucher allocation and redemption.
-                                </p>
-
-                            </div>
-
-                        </div>
+                        <h3 className="text-xl font-bold text-gray-900">
+                            Voucher Summary
+                        </h3>
+                        <p className="text-sm text-gray-500 mt-1">
+                            Allocation and redemption totals.
+                        </p>
 
                         <div className="space-y-5 mt-6">
-
                             <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Active Voucher Records
-                                </p>
-
-                                <p className="text-3xl font-bold text-[#102d55] mt-1">
+                                <p className="text-sm text-gray-500">Voucher Records</p>
+                                <p className="text-3xl font-bold text-[#102d55]">
                                     {voucherCount}
                                 </p>
-
                             </div>
 
                             <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Voucher Value
+                                <p className="text-sm text-gray-500">Total Redeemed</p>
+                                <p className="text-2xl font-bold text-green-700">
+                                    {formatCurrency(totalVoucherRedemption)}
                                 </p>
-
-                                <p className="text-2xl font-bold text-[#102d55] mt-1">
-                                    {formatCurrency(
-                                        totalVoucherValue
-                                    )}
-                                </p>
-
                             </div>
 
                             <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Vouchers with Pending Balances
+                                <p className="text-sm text-gray-500">Pending Balance</p>
+                                <p className="text-2xl font-bold text-red-600">
+                                    {formatCurrency(totalVoucherBalance)}
                                 </p>
-
-                                <p className="text-2xl font-bold text-red-600 mt-1">
-                                    {formatCurrency(
-                                        totalVoucherBalance
-                                    )}
-                                </p>
-
                             </div>
-
-                            <div className="pt-4 border-t border-gray-100">
-
-                                <p className="text-sm text-gray-500">
-                                    Total Redeemed
-                                </p>
-
-                                <p className="text-2xl font-bold text-green-600 mt-1">
-                                    {formatCurrency(
-                                        totalVoucherRedemption
-                                    )}
-                                </p>
-
-                            </div>
-
                         </div>
-
                     </div>
 
-                    {/* RECENT ACTIVITY + TOOLS */}
+                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                        <h3 className="text-xl font-bold text-gray-900">
+                            Recent Activity
+                        </h3>
+                        <p className="text-sm text-gray-500 mt-1">
+                            Latest records in the current report.
+                        </p>
 
-                    <div className="space-y-5">
+                        <div className="space-y-4 mt-6">
+                            {recentActivity.length === 0 ? (
+                                <p className="text-sm text-gray-500">
+                                    No recent activity available.
+                                </p>
+                            ) : (
+                                recentActivity.map((item) => (
+                                    <div key={item.id} className="flex items-start gap-3">
+                                        <div className="w-9 h-9 rounded-full bg-blue-50 text-[#102d55] flex items-center justify-center shrink-0">
+                                            {item.type === "Voucher" ? (
+                                                <WalletCards size={17} />
+                                            ) : (
+                                                <Receipt size={17} />
+                                            )}
+                                        </div>
 
-                        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                            <div className="flex items-center gap-3">
-
-                                <Activity
-                                    size={21}
-                                    className="text-[#102d55]"
-                                />
-
-                                <div>
-
-                                    <h3 className="text-xl font-bold text-gray-900">
-                                        Recent Activity
-                                    </h3>
-
-                                    <p className="text-sm text-gray-500">
-                                        Latest report-related records.
-                                    </p>
-
-                                </div>
-
-                            </div>
-
-                            <div className="mt-5 space-y-3">
-
-                                {recentActivity.length === 0 ? (
-
-                                    <p className="text-sm text-gray-500">
-                                        No recent activity available.
-                                    </p>
-
-                                ) : (
-
-                                    recentActivity.map(
-                                        (
-                                            activity
-                                        ) => (
-
-                                            <div
-                                                key={
-                                                    activity.id
-                                                }
-                                                className="flex items-start gap-3"
-                                            >
-
-                                                <div className="w-8 h-8 rounded-full bg-blue-50 text-[#102d55] flex items-center justify-center flex-shrink-0">
-                                                    {getActivityIcon(
-                                                        activity.type
-                                                    )}
-                                                </div>
-
-                                                <div className="min-w-0">
-
-                                                    <p className="text-sm font-semibold text-gray-800">
-                                                        {activity.text}
-                                                    </p>
-
-                                                    <p className="text-xs text-gray-500 truncate">
-                                                        {activity.detail}
-                                                    </p>
-
-                                                </div>
-
-                                            </div>
-
-                                        )
-                                    )
-
-                                )}
-
-                            </div>
-
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-semibold text-gray-800">
+                                                {item.type}: {item.number}
+                                            </p>
+                                            <p className="text-xs text-gray-500 truncate">
+                                                {item.name}
+                                            </p>
+                                            <p className="text-xs text-gray-400 mt-1">
+                                                {formatDate(item.date)}
+                                            </p>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
                         </div>
+                    </div>
+                </section>
 
-                        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                            <h3 className="text-xl font-bold text-gray-900">
-                                Report Tools
+                <section className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                    <div className="p-6 border-b border-gray-200 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                        <div>
+                            <h3 className="text-2xl font-bold text-gray-900">
+                                Financial Transaction Registry
                             </h3>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-3 xl:grid-cols-1 gap-3 mt-5">
-
-                                <button
-                                    type="button"
-                                    onClick={printReport}
-                                    disabled={loading}
-                                    className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#0797a6] text-white font-semibold hover:bg-[#067f8b] disabled:opacity-50"
-                                >
-                                    <Printer size={17} />
-                                    Print Report
-                                </button>
-
-                                <button
-                                    type="button"
-                                    onClick={exportPDF}
-                                    disabled={loading}
-                                    className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                    <Download size={17} />
-                                    Export to PDF
-                                </button>
-
-                                <button
-                                    type="button"
-                                    onClick={loadReports}
-                                    disabled={loading}
-                                    className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                    <RefreshCw
-                                        size={17}
-                                        className={
-                                            loading
-                                                ? "animate-spin"
-                                                : ""
-                                        }
-                                    />
-                                    Refresh Data
-                                </button>
-
-                            </div>
-
+                            <p className="text-sm text-gray-500 mt-1">
+                                Records included in printing and PDF export.
+                            </p>
                         </div>
 
-                    </div>
+                        <div className="flex flex-wrap gap-2 text-xs font-semibold">
+                            <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-blue-50 text-blue-700">
+                                <Receipt size={14} />
+                                {collectionCount} Collections
+                            </span>
 
-                </div>
-
-                {/* =================================================
-                    REPORT REGISTRY
-                ================================================= */}
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-
-                    <div className="p-6 border-b border-gray-200">
-
-                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-
-                            <div>
-
-                                <h3 className="text-2xl font-bold text-gray-900">
-                                    Financial Transaction Registry
-                                </h3>
-
-                                <p className="text-sm text-gray-500 mt-1">
-                                    Collections and voucher records included in this report.
-                                </p>
-
-                            </div>
-
-                            <div className="flex flex-wrap gap-2 text-xs font-semibold">
-
-                                <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-blue-50 text-blue-700">
-                                    <Receipt size={14} />
-                                    {collectionCount} Collections
-                                </span>
-
-                                <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-cyan-50 text-cyan-700">
-                                    <WalletCards size={14} />
-                                    {voucherCount} Vouchers
-                                </span>
-
-                            </div>
-
+                            <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-cyan-50 text-cyan-700">
+                                <WalletCards size={14} />
+                                {voucherCount} Vouchers
+                            </span>
                         </div>
-
                     </div>
 
                     <div className="overflow-x-auto">
-
-                        <table className="w-full min-w-[1250px]">
-
+                        <table className="w-full min-w-[1200px]">
                             <thead className="bg-[#eef4f8]">
-
                                 <tr>
-
-                                    <th className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600">
-                                        Payer Name
-                                    </th>
-
-                                    <th className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600">
-                                        Student ID
-                                    </th>
-
-                                    <th className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600">
-                                        Transaction / Voucher ID
-                                    </th>
-
-                                    <th className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600">
-                                        Type
-                                    </th>
-
-                                    <th className="px-5 py-4 text-right text-xs font-bold uppercase text-gray-600">
-                                        Assigned / Amount
-                                    </th>
-
-                                    <th className="px-5 py-4 text-right text-xs font-bold uppercase text-gray-600">
-                                        Collection / Redemption
-                                    </th>
-
-                                    <th className="px-5 py-4 text-right text-xs font-bold uppercase text-gray-600">
-                                        Pending Balance
-                                    </th>
-
-                                    <th className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600">
-                                        Date
-                                    </th>
-
+                                    {[
+                                        "Payer Name",
+                                        "Student ID",
+                                        "Transaction / Voucher ID",
+                                        "Type",
+                                        "Assigned / Amount",
+                                        "Collected / Redeemed",
+                                        "Pending Balance",
+                                        "Date",
+                                    ].map((heading) => (
+                                        <th
+                                            key={heading}
+                                            className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600"
+                                        >
+                                            {heading}
+                                        </th>
+                                    ))}
                                 </tr>
-
                             </thead>
 
                             <tbody className="divide-y divide-gray-100">
-
                                 {loading ? (
-
                                     <tr>
-
-                                        <td
-                                            colSpan="8"
-                                            className="py-16 text-center text-gray-500"
-                                        >
-
-                                            <RefreshCw
-                                                size={28}
-                                                className="animate-spin mx-auto mb-3"
-                                            />
-
+                                        <td colSpan={8} className="py-16 text-center text-gray-500">
+                                            <RefreshCw size={28} className="animate-spin mx-auto mb-3" />
                                             Loading financial records...
-
                                         </td>
-
                                     </tr>
-
-                                ) : (
-                                    filteredVouchers.length === 0 &&
-                                    filteredReceipts.length === 0
-                                ) ? (
-
+                                ) : totalRecordCount === 0 ? (
                                     <tr>
-
-                                        <td
-                                            colSpan="8"
-                                            className="py-16 text-center text-gray-500"
-                                        >
-
-                                            <FileText
-                                                size={35}
-                                                className="mx-auto mb-3 text-gray-300"
-                                            />
-
-                                            <p className="font-semibold">
-                                                No records found.
-                                            </p>
-
+                                        <td colSpan={8} className="py-16 text-center text-gray-500">
+                                            <FileText size={35} className="mx-auto mb-3 text-gray-300" />
+                                            <p className="font-semibold">No records found.</p>
                                             <p className="text-sm mt-1">
-                                                Try another date range or search term.
+                                                Try clearing the filters or refreshing the records.
                                             </p>
-
                                         </td>
-
                                     </tr>
-
                                 ) : (
-
                                     <>
+                                        {filteredVouchers.map((record) => (
+                                            <tr
+                                                key={`voucher-${record.id ?? getVoucherNumber(record)}`}
+                                                className="hover:bg-blue-50/30"
+                                            >
+                                                <td className="px-5 py-4 font-semibold text-gray-900">
+                                                    {getVoucherPayer(record)}
+                                                </td>
+                                                <td className="px-5 py-4 text-sm text-gray-600">
+                                                    {getVoucherStudentId(record)}
+                                                </td>
+                                                <td className="px-5 py-4 font-bold text-[#102d55]">
+                                                    {getVoucherNumber(record)}
+                                                </td>
+                                                <td className="px-5 py-4">
+                                                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-50 text-cyan-700 text-xs font-semibold">
+                                                        <WalletCards size={14} />
+                                                        {getVoucherType(record)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-5 py-4 text-right font-semibold">
+                                                    {formatCurrency(getVoucherAssignedValue(record))}
+                                                </td>
+                                                <td className="px-5 py-4 text-right font-semibold text-green-700">
+                                                    {formatCurrency(getVoucherRedeemedValue(record))}
+                                                </td>
+                                                <td className="px-5 py-4 text-right font-semibold text-red-600">
+                                                    {formatCurrency(getVoucherBalance(record))}
+                                                </td>
+                                                <td className="px-5 py-4 text-sm text-gray-600">
+                                                    {formatDate(getVoucherDate(record))}
+                                                </td>
+                                            </tr>
+                                        ))}
 
-                                        {filteredVouchers.map(
-                                            (
-                                                voucher
-                                            ) => {
-
-                                                const balance =
-                                                    getVoucherBalance(
-                                                        voucher
-                                                    );
-
-                                                return (
-
-                                                    <tr
-                                                        key={`voucher-${voucher.id}`}
-                                                        className="hover:bg-blue-50/30 transition"
-                                                    >
-
-                                                        <td className="px-5 py-4 font-semibold text-gray-900">
-                                                            {getVoucherPayer(
-                                                                voucher
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-sm text-gray-600">
-                                                            {getVoucherStudentId(
-                                                                voucher
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 font-bold text-[#102d55]">
-                                                            {getVoucherNumber(
-                                                                voucher
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4">
-
-                                                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-50 text-cyan-700 text-xs font-semibold">
-
-                                                                <WalletCards
-                                                                    size={14}
-                                                                />
-
-                                                                {getVoucherType(
-                                                                    voucher
-                                                                )}
-
-                                                            </span>
-
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-right font-semibold">
-                                                            {formatCurrency(
-                                                                getVoucherAssignedValue(
-                                                                    voucher
-                                                                )
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-right font-bold text-green-700">
-                                                            {formatCurrency(
-                                                                getVoucherRedeemedValue(
-                                                                    voucher
-                                                                )
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-right font-bold text-red-600">
-                                                            {formatCurrency(
-                                                                balance
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-sm text-gray-600">
-                                                            {formatDate(
-                                                                getVoucherDate(
-                                                                    voucher
-                                                                )
-                                                            )}
-                                                        </td>
-
-                                                    </tr>
-
-                                                );
-                                            }
-                                        )}
-
-                                        {filteredReceipts.map(
-                                            (
-                                                receipt
-                                            ) => {
-
-                                                return (
-
-                                                    <tr
-                                                        key={`receipt-${receipt.id}`}
-                                                        className="hover:bg-blue-50/30 transition"
-                                                    >
-
-                                                        <td className="px-5 py-4 font-semibold text-gray-900">
-                                                            {getReceiptPayer(
-                                                                receipt
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-sm text-gray-600">
-                                                            {getReceiptStudentId(
-                                                                receipt
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 font-bold text-[#102d55]">
-                                                            {getReceiptNumber(
-                                                                receipt
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4">
-
-                                                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold">
-
-                                                                <Receipt
-                                                                    size={14}
-                                                                />
-
-                                                                {getReceiptPurpose(
-                                                                    receipt
-                                                                )}
-
-                                                            </span>
-
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-right font-semibold">
-                                                            {formatCurrency(
-                                                                getReceiptAmount(
-                                                                    receipt
-                                                                )
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-right font-bold text-green-700">
-                                                            {formatCurrency(
-                                                                getReceiptAmount(
-                                                                    receipt
-                                                                )
-                                                            )}
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-right text-gray-400">
-                                                            —
-                                                        </td>
-
-                                                        <td className="px-5 py-4 text-sm text-gray-600">
-                                                            {formatDate(
-                                                                getReceiptDate(
-                                                                    receipt
-                                                                )
-                                                            )}
-                                                        </td>
-
-                                                    </tr>
-
-                                                );
-                                            }
-                                        )}
-
+                                        {filteredReceipts.map((record) => (
+                                            <tr
+                                                key={`receipt-${record.id ?? getReceiptNumber(record)}`}
+                                                className="hover:bg-blue-50/30"
+                                            >
+                                                <td className="px-5 py-4 font-semibold text-gray-900">
+                                                    {getReceiptPayer(record)}
+                                                </td>
+                                                <td className="px-5 py-4 text-sm text-gray-600">
+                                                    {getReceiptStudentId(record)}
+                                                </td>
+                                                <td className="px-5 py-4 font-bold text-[#102d55]">
+                                                    {getReceiptNumber(record)}
+                                                </td>
+                                                <td className="px-5 py-4">
+                                                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold">
+                                                        <Receipt size={14} />
+                                                        {getReceiptPurpose(record)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-5 py-4 text-right font-semibold">
+                                                    {formatCurrency(getReceiptAmount(record))}
+                                                </td>
+                                                <td className="px-5 py-4 text-right font-semibold text-green-700">
+                                                    {formatCurrency(getReceiptAmount(record))}
+                                                </td>
+                                                <td className="px-5 py-4 text-right text-gray-400">
+                                                    —
+                                                </td>
+                                                <td className="px-5 py-4 text-sm text-gray-600">
+                                                    {formatDate(getReceiptDate(record))}
+                                                </td>
+                                            </tr>
+                                        ))}
                                     </>
-
                                 )}
-
                             </tbody>
-
                         </table>
-
                     </div>
-
-                    {/* =================================================
-                        FOOTER SUMMARY
-                    ================================================= */}
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-6 border-t bg-gray-50">
-
                         <div>
-
-                            <p className="text-sm text-gray-500">
-                                Total Collections
-                            </p>
-
+                            <p className="text-sm text-gray-500">Total Collections</p>
                             <p className="text-xl font-bold text-[#102d55] mt-1">
-                                {formatCurrency(
-                                    totalCollections
-                                )}
+                                {formatCurrency(totalCollections)}
                             </p>
-
                         </div>
 
                         <div>
-
-                            <p className="text-sm text-gray-500">
-                                Total Voucher Value
-                            </p>
-
+                            <p className="text-sm text-gray-500">Total Voucher Value</p>
                             <p className="text-xl font-bold text-[#0797a6] mt-1">
-                                {formatCurrency(
-                                    totalVoucherValue
-                                )}
+                                {formatCurrency(totalVoucherValue)}
                             </p>
-
                         </div>
 
                         <div>
-
-                            <p className="text-sm text-gray-500">
-                                Pending Voucher Balance
-                            </p>
-
+                            <p className="text-sm text-gray-500">Pending Voucher Balance</p>
                             <p className="text-xl font-bold text-red-600 mt-1">
-                                {formatCurrency(
-                                    totalVoucherBalance
-                                )}
+                                {formatCurrency(totalVoucherBalance)}
                             </p>
-
                         </div>
-
                     </div>
+                </section>
 
-                </div>
-
-                {/* =================================================
-                    REPORT STATUS
-                ================================================= */}
-
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-sm text-gray-500">
-
+                <footer className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-sm text-gray-500">
                     <div className="flex items-center gap-2">
+                        {loading ? (
+                            <RefreshCw size={16} className="animate-spin" />
+                        ) : receiptError && voucherError ? (
+                            <XCircle size={16} className="text-red-600" />
+                        ) : (
+                            <CheckCircle size={16} className="text-green-600" />
+                        )}
 
-                        <CheckCircle
-                            size={16}
-                            className="text-green-600"
-                        />
-
-                        Report data loaded from the UniTeq financial records.
-
+                        {loading
+                            ? "Loading financial records..."
+                            : `${totalRecordCount} report record${totalRecordCount === 1 ? "" : "s"} loaded`}
                     </div>
 
                     <div>
-
                         {lastUpdated
-                            ? `Last updated: ${lastUpdated.toLocaleString(
-                                  "en-PH"
-                              )}`
+                            ? `Last updated: ${lastUpdated.toLocaleString("en-PH")}`
                             : "Waiting for data..."}
-
-                        {voucherLoading && (
-                            <span className="ml-2">
-                                Loading voucher records...
-                            </span>
-                        )}
-
                     </div>
-
-                </div>
-
+                </footer>
             </main>
-
         </div>
     );
 }

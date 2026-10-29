@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import axios from "axios";
 import {
     Search,
     Plus,
@@ -17,34 +18,90 @@ import {
     Bell,
     Ban,
 } from "lucide-react";
-import axios from "axios";
-
-const API_URL = "http://127.0.0.1:8000/api/vouchers";
 
 /* =========================================================
-   DATE
+   API CONFIGURATION
 ========================================================= */
 
-function getToday() {
-    return new Date().toISOString().split("T")[0];
+const API_BASE_URL = (
+    import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api"
+).replace(/\/+$/, "");
+
+const API_URL = `${API_BASE_URL}/vouchers`;
+
+const voucherApi = axios.create({
+    timeout: 15000,
+    headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+    },
+});
+
+/*
+ * Check common token keys in localStorage and sessionStorage.
+ * This helps when the login page uses a different token key.
+ */
+function getToken() {
+    const tokenKeys = [
+        "uniteq_token",
+        "token",
+        "access_token",
+        "auth_token",
+    ];
+
+    for (const storage of [localStorage, sessionStorage]) {
+        for (const key of tokenKeys) {
+            const value = storage.getItem(key);
+
+            if (value && value.trim()) {
+                return value.replace(/^Bearer\s+/i, "").trim();
+            }
+        }
+    }
+
+    return null;
 }
 
-/* =========================================================
-   HEADERS
-========================================================= */
-
 function getHeaders() {
-    const token = localStorage.getItem("uniteq_token");
+    const token = getToken();
 
     return {
         Accept: "application/json",
         "Content-Type": "application/json",
-        ...(token
-            ? {
-                  Authorization: `Bearer ${token}`,
-              }
-            : {}),
+        "X-Requested-With": "XMLHttpRequest",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
+}
+
+function getErrorMessage(error, fallback) {
+    const data = error?.response?.data;
+
+    if (data?.errors) {
+        return Object.values(data.errors).flat().join("\n");
+    }
+
+    return data?.message || error?.message || fallback;
+}
+
+function getResponseList(response) {
+    const data = response?.data;
+
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.vouchers)) return data.vouchers;
+    if (Array.isArray(data?.data?.data)) return data.data.data;
+
+    return [];
+}
+
+function getToday() {
+    const now = new Date();
+    const localDate = new Date(
+        now.getTime() - now.getTimezoneOffset() * 60000
+    );
+
+    return localDate.toISOString().slice(0, 10);
 }
 
 /* =========================================================
@@ -53,333 +110,266 @@ function getHeaders() {
 
 export default function Vouchers() {
     const [vouchers, setVouchers] = useState([]);
-
     const [loading, setLoading] = useState(true);
-
     const [search, setSearch] = useState("");
-
-    const [selectedVoucher, setSelectedVoucher] =
-        useState(null);
-
-    const [showAddModal, setShowAddModal] =
-        useState(false);
-
+    const [selectedVoucher, setSelectedVoucher] = useState(null);
+    const [showAddModal, setShowAddModal] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [pageError, setPageError] = useState("");
 
     const [form, setForm] = useState({
         voucher_number: "",
         student_id: "",
         voucher_type: "",
         assigned_value: "",
-        amount_redeemed: "",
+        amount_redeemed: "0",
         expiry_date: "",
         description: "",
     });
 
     /* =========================================================
-       LOAD VOUCHERS
+       VOUCHER HELPERS
     ========================================================= */
 
-    useEffect(() => {
-        loadVouchers();
-    }, []);
+    const getVoucherNumber = (voucher) =>
+        voucher.voucher_number ||
+        voucher.voucher_no ||
+        `UABV-26-${String(voucher.id || 0).padStart(3, "0")}`;
 
-    async function loadVouchers() {
-        try {
-            setLoading(true);
+    const getStudentId = (voucher) =>
+        voucher.student_id || voucher.student_number || "—";
 
-            const response = await axios.get(
-                API_URL,
-                {
-                    headers: getHeaders(),
-                }
-            );
+    const getVoucherType = (voucher) =>
+        voucher.voucher_type || voucher.type || "—";
 
-            console.log(
-                "Vouchers response:",
-                response.data
-            );
-
-            const data = Array.isArray(response.data)
-                ? response.data
-                : response.data?.data || [];
-
-            setVouchers(data);
-        } catch (error) {
-            console.error(
-                "Voucher loading error:",
-                error
-            );
-
-            console.error(
-                "Server response:",
-                error.response?.data
-            );
-
-            setVouchers([]);
-
-            if (error.response?.status === 401) {
-                alert(
-                    "Your session has expired. Please log in again."
-                );
-            } else if (
-                error.response?.status === 403
-            ) {
-                alert(
-                    "You are not authorized to view vouchers."
-                );
-            } else {
-                alert(
-                    error.response?.data?.message ||
-                        "Unable to load voucher records."
-                );
-            }
-        } finally {
-            setLoading(false);
-        }
-    }
-
-    /* =========================================================
-       HELPERS
-    ========================================================= */
-
-    function getVoucherNumber(voucher) {
-        return (
-            voucher.voucher_number ||
-            voucher.voucher_no ||
-            `UABV-26-${String(
-                voucher.id || 0
-            ).padStart(3, "0")}`
-        );
-    }
-
-    function getStudentId(voucher) {
-        return (
-            voucher.student_id ||
-            voucher.student_number ||
-            "—"
-        );
-    }
-
-    function getVoucherType(voucher) {
-        return (
-            voucher.voucher_type ||
-            voucher.type ||
-            "—"
-        );
-    }
-
-    function getAssignedValue(voucher) {
-        return Number(
+    const getAssignedValue = (voucher) =>
+        Number(
             voucher.assigned_value ??
                 voucher.total_value ??
                 voucher.amount_due ??
                 voucher.amount ??
                 0
-        );
-    }
+        ) || 0;
 
-    function getAmountRedeemed(voucher) {
-        return Number(
+    const getAmountRedeemed = (voucher) =>
+        Number(
             voucher.amount_redeemed ??
                 voucher.redeemed_amount ??
                 voucher.amount_paid ??
                 0
-        );
-    }
+        ) || 0;
 
-    function getRemainingBalance(voucher) {
+    const getRemainingBalance = (voucher) => {
         if (
             voucher.remaining_balance !== null &&
             voucher.remaining_balance !== undefined
         ) {
-            return Math.max(
-                Number(voucher.remaining_balance),
-                0
-            );
+            return Math.max(Number(voucher.remaining_balance) || 0, 0);
         }
 
         return Math.max(
-            getAssignedValue(voucher) -
-                getAmountRedeemed(voucher),
+            getAssignedValue(voucher) - getAmountRedeemed(voucher),
             0
         );
-    }
+    };
 
-    function getStatus(voucher) {
-        const assigned =
-            getAssignedValue(voucher);
-
-        const redeemed =
-            getAmountRedeemed(voucher);
-
-        const balance =
-            getRemainingBalance(voucher);
-
-        const expiryDate =
-            voucher.expiry_date;
+    const getStatus = (voucher) => {
+        const assigned = getAssignedValue(voucher);
+        const redeemed = getAmountRedeemed(voucher);
+        const balance = getRemainingBalance(voucher);
 
         if (
-            expiryDate &&
-            new Date(expiryDate) <
-                new Date(
-                    getToday()
-                ) &&
+            voucher.expiry_date &&
+            voucher.expiry_date.slice(0, 10) < getToday() &&
             balance > 0
         ) {
             return "Expired";
         }
 
-        if (
-            assigned > 0 &&
-            balance <= 0
-        ) {
+        if (assigned > 0 && balance <= 0) {
             return "Fully Redeemed";
         }
 
-        if (
-            redeemed > 0 &&
-            balance > 0
-        ) {
+        if (redeemed > 0 && balance > 0) {
             return "Partially Redeemed";
         }
 
         return "Unused";
-    }
+    };
 
-    function formatCurrency(amount) {
-        return new Intl.NumberFormat(
-            "en-PH",
-            {
-                style: "currency",
-                currency: "PHP",
-            }
-        ).format(
-            Number(amount) || 0
-        );
-    }
+    const formatCurrency = (amount) =>
+        new Intl.NumberFormat("en-PH", {
+            style: "currency",
+            currency: "PHP",
+        }).format(Number(amount) || 0);
 
-    function formatDate(value) {
-        if (!value) {
-            return "—";
+    const formatDate = (value) => {
+        if (!value) return "—";
+
+        const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+
+        if (Number.isNaN(date.getTime())) return "—";
+
+        return date.toLocaleDateString("en-PH", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+        });
+    };
+
+    const getStatusStyle = (status) => {
+        switch (status) {
+            case "Fully Redeemed":
+                return "bg-green-100 text-green-700";
+            case "Partially Redeemed":
+                return "bg-yellow-100 text-yellow-700";
+            case "Expired":
+                return "bg-red-100 text-red-700";
+            default:
+                return "bg-blue-100 text-blue-700";
         }
+    };
 
-        const date = new Date(value);
-
-        if (
-            Number.isNaN(
-                date.getTime()
-            )
-        ) {
-            return "—";
+    const getStatusIcon = (status) => {
+        switch (status) {
+            case "Fully Redeemed":
+                return <CheckCircle size={15} />;
+            case "Partially Redeemed":
+                return <Clock size={15} />;
+            case "Expired":
+                return <AlertCircle size={15} />;
+            default:
+                return <Ticket size={15} />;
         }
-
-        return date.toLocaleDateString(
-            "en-PH",
-            {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-            }
-        );
-    }
-
-    function getStatusStyle(status) {
-        if (status === "Fully Redeemed") {
-            return "bg-green-100 text-green-700";
-        }
-
-        if (status === "Partially Redeemed") {
-            return "bg-yellow-100 text-yellow-700";
-        }
-
-        if (status === "Expired") {
-            return "bg-red-100 text-red-700";
-        }
-
-        return "bg-blue-100 text-blue-700";
-    }
-
-    function getStatusIcon(status) {
-        if (status === "Fully Redeemed") {
-            return (
-                <CheckCircle size={15} />
-            );
-        }
-
-        if (status === "Partially Redeemed") {
-            return (
-                <Clock size={15} />
-            );
-        }
-
-        if (status === "Expired") {
-            return (
-                <AlertCircle size={15} />
-            );
-        }
-
-        return (
-            <Ticket size={15} />
-        );
-    }
+    };
 
     /* =========================================================
-       SORT
+       LOAD VOUCHERS
     ========================================================= */
 
-    const sortedVouchers = useMemo(() => {
-        return [...vouchers].sort(
-            (a, b) => {
-                const numberA =
-                    Number(
-                        String(
-                            getVoucherNumber(a)
-                        ).match(
-                            /\d+$/ 
-                        )?.[0] || 0
-                    );
+    const loadVouchers = useCallback(async () => {
+        setLoading(true);
+        setPageError("");
 
-                const numberB =
-                    Number(
-                        String(
-                            getVoucherNumber(b)
-                        ).match(
-                            /\d+$/
-                        )?.[0] || 0
-                    );
+        const token = getToken();
 
-                return (
-                    numberA -
-                    numberB
+        if (!token) {
+            setVouchers([]);
+            setLoading(false);
+            setPageError(
+                "No authentication token was found. Please log out and log in again."
+            );
+            return;
+        }
+
+        try {
+            const response = await voucherApi.get(API_URL, {
+                headers: getHeaders(),
+            });
+
+            setVouchers(getResponseList(response));
+        } catch (error) {
+            console.error("Voucher loading error:", error);
+            console.error("Server response:", error.response?.data);
+
+            setVouchers([]);
+
+            if (error.response?.status === 401) {
+                setPageError(
+                    "Laravel rejected your login token. Please log out and log in again. If this continues, the backend authentication configuration needs to be checked."
+                );
+            } else if (error.response?.status === 403) {
+                setPageError(
+                    "Your account is not authorized to view vouchers."
+                );
+            } else if (error.response?.status === 404) {
+                setPageError(
+                    "The vouchers API route was not found. Check the Laravel routes in backend/routes/api.php."
+                );
+            } else {
+                setPageError(
+                    getErrorMessage(error, "Unable to load voucher records.")
                 );
             }
-        );
-    }, [vouchers]);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadVouchers();
+    }, [loadVouchers]);
 
     /* =========================================================
-       SEARCH
+       SEARCH AND SORT
     ========================================================= */
 
-    const filteredVouchers =
-        sortedVouchers.filter(
-            (voucher) => {
-                const text = `
-                    ${getVoucherNumber(voucher)}
-                    ${getStudentId(voucher)}
-                    ${getVoucherType(voucher)}
-                    ${voucher.description || ""}
-                    ${getStatus(voucher)}
-                `.toLowerCase();
+    const filteredVouchers = useMemo(() => {
+        const sorted = [...vouchers].sort((a, b) => {
+            const numberA = Number(
+                String(getVoucherNumber(a)).match(/\d+$/)?.[0] || 0
+            );
 
-                return text.includes(
-                    search.toLowerCase()
-                );
-            }
-        );
+            const numberB = Number(
+                String(getVoucherNumber(b)).match(/\d+$/)?.[0] || 0
+            );
+
+            return numberA - numberB;
+        });
+
+        const query = search.trim().toLowerCase();
+
+        if (!query) return sorted;
+
+        return sorted.filter((voucher) => {
+            const text = [
+                getVoucherNumber(voucher),
+                getStudentId(voucher),
+                getVoucherType(voucher),
+                voucher.description || "",
+                getStatus(voucher),
+            ]
+                .join(" ")
+                .toLowerCase();
+
+            return text.includes(query);
+        });
+    }, [vouchers, search]);
 
     /* =========================================================
-       RESET FORM
+       SUMMARY
+    ========================================================= */
+
+    const totalAssigned = vouchers.reduce(
+        (total, voucher) => total + getAssignedValue(voucher),
+        0
+    );
+
+    const totalRedeemed = vouchers.reduce(
+        (total, voucher) => total + getAmountRedeemed(voucher),
+        0
+    );
+
+    const totalUncollected = vouchers.reduce(
+        (total, voucher) => total + getRemainingBalance(voucher),
+        0
+    );
+
+    const collectionToday = vouchers.reduce((total, voucher) => {
+        const date = String(
+            voucher.updated_at ||
+                voucher.date ||
+                voucher.created_at ||
+                ""
+        ).slice(0, 10);
+
+        return date === getToday()
+            ? total + getAmountRedeemed(voucher)
+            : total;
+    }, 0);
+
+    /* =========================================================
+       FORM HANDLING
     ========================================================= */
 
     function resetForm() {
@@ -388,212 +378,123 @@ export default function Vouchers() {
             student_id: "",
             voucher_type: "",
             assigned_value: "",
-            amount_redeemed: "",
+            amount_redeemed: "0",
             expiry_date: "",
             description: "",
         });
     }
-
-    /* =========================================================
-       OPEN ADD MODAL
-    ========================================================= */
 
     function openAddModal() {
         resetForm();
         setShowAddModal(true);
     }
 
-    /* =========================================================
-       FORM CHANGE
-    ========================================================= */
+    function handleChange(event) {
+        const { name, value } = event.target;
 
-    function handleChange(e) {
-        const {
-            name,
-            value,
-        } = e.target;
-
-        setForm(
-            (previous) => ({
-                ...previous,
-                [name]: value,
-            })
-        );
+        setForm((previous) => ({
+            ...previous,
+            [name]: value,
+        }));
     }
 
     /* =========================================================
-       ADD VOUCHER
+       CREATE VOUCHER
     ========================================================= */
 
-    async function handleSubmit(e) {
-        e.preventDefault();
+    async function handleSubmit(event) {
+        event.preventDefault();
+
+        if (!getToken()) {
+            alert("Please log out and log in again before creating a voucher.");
+            return;
+        }
 
         if (!form.student_id.trim()) {
-            alert(
-                "Please enter the Student ID."
-            );
+            alert("Please enter the Student ID.");
             return;
         }
 
         if (!form.voucher_type.trim()) {
-            alert(
-                "Please enter the voucher type."
-            );
+            alert("Please enter the voucher type.");
             return;
         }
 
         if (
             form.assigned_value === "" ||
+            !Number.isFinite(Number(form.assigned_value)) ||
             Number(form.assigned_value) < 0
         ) {
-            alert(
-                "Please enter a valid assigned value."
-            );
+            alert("Please enter a valid assigned value.");
             return;
         }
 
         if (
             form.amount_redeemed === "" ||
+            !Number.isFinite(Number(form.amount_redeemed)) ||
             Number(form.amount_redeemed) < 0
         ) {
-            alert(
-                "Please enter a valid redeemed amount."
-            );
+            alert("Please enter a valid redeemed amount.");
             return;
         }
 
-        const assignedValue =
-            Number(
-                form.assigned_value
-            );
+        const assignedValue = Number(form.assigned_value);
+        const amountRedeemed = Number(form.amount_redeemed);
 
-        const amountRedeemed =
-            Number(
-                form.amount_redeemed
-            );
-
-        if (
-            amountRedeemed >
-            assignedValue
-        ) {
+        if (amountRedeemed > assignedValue) {
             alert(
                 "Amount redeemed cannot be greater than the assigned value."
             );
             return;
         }
 
+        const payload = {
+            voucher_number: form.voucher_number.trim() || null,
+            student_id: form.student_id.trim(),
+            voucher_type: form.voucher_type.trim(),
+            assigned_value: assignedValue,
+            amount_redeemed: amountRedeemed,
+            remaining_balance: Math.max(
+                assignedValue - amountRedeemed,
+                0
+            ),
+            expiry_date: form.expiry_date || null,
+            description: form.description.trim(),
+        };
+
+        setSaving(true);
+
         try {
-            setSaving(true);
+            const response = await voucherApi.post(API_URL, payload, {
+                headers: getHeaders(),
+            });
 
-            const payload = {
-                voucher_number:
-                    form.voucher_number.trim() ||
-                    null,
-
-                student_id:
-                    form.student_id.trim(),
-
-                voucher_type:
-                    form.voucher_type.trim(),
-
-                assigned_value:
-                    assignedValue,
-
-                amount_redeemed:
-                    amountRedeemed,
-
-                remaining_balance:
-                    Math.max(
-                        assignedValue -
-                            amountRedeemed,
-                        0
-                    ),
-
-                expiry_date:
-                    form.expiry_date ||
-                    null,
-
-                description:
-                    form.description.trim(),
-            };
-
-            console.log(
-                "Voucher payload:",
-                payload
-            );
-
-            const response =
-                await axios.post(
-                    API_URL,
-                    payload,
-                    {
-                        headers:
-                            getHeaders(),
-                    }
-                );
-
-            console.log(
-                "Voucher saved:",
-                response.data
-            );
-
-            alert(
-                "Voucher saved successfully!"
-            );
+            alert(response.data?.message || "Voucher saved successfully.");
 
             setShowAddModal(false);
-
             resetForm();
 
             await loadVouchers();
         } catch (error) {
-            console.error(
-                "Voucher save error:",
-                error
-            );
+            console.error("Voucher save error:", error);
+            console.error("Server response:", error.response?.data);
 
-            const status =
-                error.response?.status;
-
-            const data =
-                error.response?.data;
-
-            if (status === 422) {
-                if (data?.errors) {
-                    const messages =
-                        Object.values(
-                            data.errors
-                        )
-                            .flat()
-                            .join(
-                                "\n"
-                            );
-
-                    alert(
-                        messages
-                    );
-                } else {
-                    alert(
-                        data?.message ||
-                            "Please check the information entered."
-                    );
-                }
-            } else if (
-                status === 401
-            ) {
+            if (error.response?.status === 401) {
                 alert(
-                    "Your session has expired. Please log in again."
+                    "Laravel rejected your login token. Please log out and log in again."
                 );
-            } else if (
-                status === 403
-            ) {
+            } else if (error.response?.status === 403) {
+                alert("Your account is not authorized to create vouchers.");
+            } else if (error.response?.status === 404) {
                 alert(
-                    "You are not authorized to create vouchers."
+                    "The voucher creation route was not found. Check backend/routes/api.php."
                 );
             } else {
                 alert(
-                    data?.message ||
+                    getErrorMessage(
+                        error,
                         "Something went wrong while saving the voucher."
+                    )
                 );
             }
         } finally {
@@ -607,103 +508,54 @@ export default function Vouchers() {
 
     function handleReminder(voucher) {
         alert(
-            `Payment reminder prepared for Student ID: ${getStudentId(
-                voucher
-            )}`
+            `Payment reminder prepared for Student ID: ${getStudentId(voucher)}`
         );
     }
 
     function handlePenalty(voucher) {
         alert(
-            `Penalty action selected for Student ID: ${getStudentId(
-                voucher
-            )}.`
+            `Penalty action selected for Student ID: ${getStudentId(voucher)}. This is a prototype action and has not changed the database.`
         );
     }
 
     function handleFinalNotice(voucher) {
         alert(
-            `Final notice prepared for Voucher: ${getVoucherNumber(
-                voucher
-            )}`
+            `Final notice prepared for Voucher: ${getVoucherNumber(voucher)}`
         );
     }
 
     function handleRestrictAccess(voucher) {
         alert(
-            `Access restriction selected for Student ID: ${getStudentId(
-                voucher
-            )}.`
+            `Access restriction selected for Student ID: ${getStudentId(voucher)}. This is a prototype action and has not changed student access.`
         );
     }
 
     /* =========================================================
-       SUMMARY
+       REUSABLE COMPONENTS
     ========================================================= */
 
-    const totalAssigned =
-        vouchers.reduce(
-            (total, voucher) =>
-                total +
-                getAssignedValue(
-                    voucher
-                ),
-            0
+    function SummaryCard({ title, amount, icon, color }) {
+        return (
+            <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                <div className="flex items-center justify-between gap-4">
+                    <div>
+                        <p className="text-sm text-gray-500">{title}</p>
+                        <h2 className={`mt-2 text-2xl font-bold ${color}`}>
+                            {formatCurrency(amount)}
+                        </h2>
+                    </div>
+
+                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gray-50">
+                        {icon}
+                    </div>
+                </div>
+            </div>
         );
+    }
 
-    const totalRedeemed =
-        vouchers.reduce(
-            (total, voucher) =>
-                total +
-                getAmountRedeemed(
-                    voucher
-                ),
-            0
-        );
-
-    const totalUncollected =
-        vouchers.reduce(
-            (total, voucher) =>
-                total +
-                getRemainingBalance(
-                    voucher
-                ),
-            0
-        );
-
-    const collectionToday =
-        vouchers.reduce(
-            (
-                total,
-                voucher
-            ) => {
-                const date =
-                    String(
-                        voucher.updated_at ||
-                            voucher.date ||
-                            voucher.created_at ||
-                            ""
-                    ).substring(
-                        0,
-                        10
-                    );
-
-                if (
-                    date ===
-                    getToday()
-                ) {
-                    return (
-                        total +
-                        getAmountRedeemed(
-                            voucher
-                        )
-                    );
-                }
-
-                return total;
-            },
-            0
-        );
+    function closeAddModal() {
+        if (!saving) setShowAddModal(false);
+    }
 
     /* =========================================================
        RENDER
@@ -711,1370 +563,772 @@ export default function Vouchers() {
 
     return (
         <div className="min-h-screen bg-[#f5f7fa]">
+            {/* HEADER */}
+            <header className="bg-[#102d55] text-white">
+                <div className="mx-auto flex max-w-[1500px] flex-col justify-between gap-5 px-6 py-7 lg:flex-row lg:items-center">
+                    <div className="flex items-center gap-5">
+                        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white shadow-lg">
+                            <Ticket size={34} className="text-[#102d55]" />
+                        </div>
 
-            {/* =================================================
-                HEADER
-            ================================================= */}
+                        <div>
+                            <p className="text-sm text-blue-100">
+                                University of Abra · Main Campus · Cashier's Unit
+                            </p>
+                            <h1 className="mt-1 text-3xl font-bold sm:text-4xl">
+                                Vouchers Page
+                            </h1>
+                            <p className="mt-2 text-blue-100">
+                                Monitor voucher assignments, redemptions, and
+                                pending balances.
+                            </p>
+                        </div>
+                    </div>
 
-            <div className="bg-[#102d55] text-white">
+                    <button
+                        type="button"
+                        onClick={loadVouchers}
+                        disabled={loading}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-white/80 px-5 py-3 font-semibold transition hover:bg-white hover:text-[#102d55] disabled:opacity-50"
+                    >
+                        <RefreshCw
+                            size={18}
+                            className={loading ? "animate-spin" : ""}
+                        />
+                        Refresh
+                    </button>
+                </div>
+            </header>
 
-                <div className="max-w-[1500px] mx-auto px-6 py-7">
-
-                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-
-                        <div className="flex items-center gap-5">
-
-                            <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-lg">
-
-                                <Ticket
-                                    size={34}
-                                    className="text-[#102d55]"
-                                />
-
-                            </div>
-
+            <main className="mx-auto max-w-[1500px] space-y-7 px-6 py-8">
+                {/* ERROR MESSAGE */}
+                {pageError && (
+                    <div className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-start gap-3">
+                            <AlertCircle size={22} className="mt-0.5 shrink-0" />
                             <div>
-
-                                <p className="text-sm text-blue-100">
-                                    University of Abra | Main Campus
-                                    <span className="mx-2">
-                                        •
-                                    </span>
-                                    Cashier's Unit
+                                <p className="font-semibold">
+                                    Unable to load vouchers
                                 </p>
-
-                                <h1 className="text-3xl sm:text-4xl font-bold mt-1">
-                                    Vouchers Page
-                                </h1>
-
-                                <p className="text-blue-100 mt-2">
-                                    Monitor voucher assignments,
-                                    redemptions, and pending balances.
-                                </p>
-
+                                <p className="mt-1 text-sm">{pageError}</p>
                             </div>
-
                         </div>
 
                         <button
                             type="button"
                             onClick={loadVouchers}
-                            disabled={loading}
-                            className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl border-2 border-white/80 hover:bg-white hover:text-[#102d55] transition font-semibold"
+                            className="rounded-lg border border-red-300 px-4 py-2 text-sm font-semibold hover:bg-red-100"
                         >
-
-                            <RefreshCw
-                                size={18}
-                                className={
-                                    loading
-                                        ? "animate-spin"
-                                        : ""
-                                }
-                            />
-
-                            Refresh
-
+                            Try Again
                         </button>
-
                     </div>
+                )}
 
-                </div>
+                {/* SUMMARY CARDS */}
+                <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+                    <SummaryCard
+                        title="Total Assigned Values"
+                        amount={totalAssigned}
+                        color="text-[#102d55]"
+                        icon={<FileText size={24} className="text-[#102d55]" />}
+                    />
 
-            </div>
+                    <SummaryCard
+                        title="Total Redeemed"
+                        amount={totalRedeemed}
+                        color="text-green-600"
+                        icon={<Wallet size={24} className="text-green-600" />}
+                    />
 
-            {/* =================================================
-                MAIN
-            ================================================= */}
+                    <SummaryCard
+                        title="Redemptions Today"
+                        amount={collectionToday}
+                        color="text-[#0797a6]"
+                        icon={
+                            <CalendarDays
+                                size={24}
+                                className="text-[#0797a6]"
+                            />
+                        }
+                    />
 
-            <main className="max-w-[1500px] mx-auto px-6 py-8 space-y-7">
+                    <SummaryCard
+                        title="Total Uncollected"
+                        amount={totalUncollected}
+                        color="text-red-600"
+                        icon={<CreditCard size={24} className="text-red-600" />}
+                    />
+                </section>
 
-                {/* =================================================
-                    SUMMARY CARDS
-                ================================================= */}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-
-                    {/* ASSIGNED */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Assigned Values
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#102d55] mt-2">
-                                    {formatCurrency(
-                                        totalAssigned
-                                    )}
-                                </h2>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center">
-
-                                <FileText
-                                    size={24}
-                                    className="text-[#102d55]"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    {/* REDEEMED */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Redeemed
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-green-600 mt-2">
-                                    {formatCurrency(
-                                        totalRedeemed
-                                    )}
-                                </h2>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center">
-
-                                <Wallet
-                                    size={24}
-                                    className="text-green-600"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    {/* TODAY */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Redemptions Today
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-[#0797a6] mt-2">
-                                    {formatCurrency(
-                                        collectionToday
-                                    )}
-                                </h2>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-cyan-50 flex items-center justify-center">
-
-                                <CalendarDays
-                                    size={24}
-                                    className="text-[#0797a6]"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    {/* BALANCE */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <div className="flex items-center justify-between">
-
-                            <div>
-
-                                <p className="text-sm text-gray-500">
-                                    Total Uncollected
-                                </p>
-
-                                <h2 className="text-2xl font-bold text-red-600 mt-2">
-                                    {formatCurrency(
-                                        totalUncollected
-                                    )}
-                                </h2>
-
-                            </div>
-
-                            <div className="w-12 h-12 rounded-xl bg-red-50 flex items-center justify-center">
-
-                                <CreditCard
-                                    size={24}
-                                    className="text-red-600"
-                                />
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                </div>
-
-                {/* =================================================
-                    VOUCHER REGISTRY
-                ================================================= */}
-
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-
-                    {/* TITLE */}
-
-                    <div className="p-6 border-b border-gray-200">
-
-                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-
+                {/* VOUCHER REGISTRY */}
+                <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+                    <div className="border-b border-gray-200 p-6">
+                        <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-center">
                             <div className="flex items-center gap-4">
-
-                                <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center">
-
+                                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50">
                                     <Ticket
                                         size={25}
                                         className="text-[#102d55]"
                                     />
-
                                 </div>
-
                                 <div>
-
                                     <h2 className="text-2xl font-bold text-gray-900">
                                         Vouchers Registry
                                     </h2>
-
-                                    <p className="text-sm text-gray-500 mt-1">
+                                    <p className="mt-1 text-sm text-gray-500">
                                         University of Abra
                                     </p>
-
                                 </div>
-
                             </div>
 
                             <button
                                 type="button"
-                                onClick={
-                                    openAddModal
-                                }
-                                className="inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-5 py-3 rounded-xl font-semibold shadow-sm transition"
+                                onClick={openAddModal}
+                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#0797a6] px-5 py-3 font-semibold text-white shadow-sm transition hover:bg-[#067f8b]"
                             >
-
-                                <Plus
-                                    size={19}
-                                />
-
+                                <Plus size={19} />
                                 Add Voucher
-
                             </button>
-
                         </div>
 
-                        {/* SEARCH */}
-
                         <div className="relative mt-6 max-w-2xl">
-
                             <Search
                                 size={19}
                                 className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                             />
-
                             <input
-                                type="text"
+                                type="search"
                                 value={search}
-                                onChange={(e) =>
-                                    setSearch(
-                                        e.target.value
-                                    )
+                                onChange={(event) =>
+                                    setSearch(event.target.value)
                                 }
-                                placeholder="Search voucher number, student ID, voucher type..."
-                                className="w-full border border-gray-300 rounded-xl pl-11 pr-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] focus:border-[#0797a6]"
+                                placeholder="Search voucher number, student ID, type, or status..."
+                                className="w-full rounded-xl border border-gray-300 py-3 pl-11 pr-4 outline-none focus:border-[#0797a6] focus:ring-2 focus:ring-[#0797a6]"
                             />
-
                         </div>
-
                     </div>
 
-                    {/* =================================================
-                        TABLE
-                    ================================================= */}
-
+                    {/* TABLE */}
                     <div className="overflow-x-auto">
-
-                        <table className="w-full min-w-[1250px]">
-
+                        <table className="w-full min-w-[1150px]">
                             <thead className="bg-[#eef4f8]">
-
                                 <tr>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Voucher Number
-                                    </th>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Student ID
-                                    </th>
-
-                                    <th className="text-left px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Voucher Type
-                                    </th>
-
-                                    <th className="text-right px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Assigned Value
-                                    </th>
-
-                                    <th className="text-right px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Amount Redeemed
-                                    </th>
-
-                                    <th className="text-right px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Current Pending Balance
-                                    </th>
-
-                                    <th className="text-center px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Expiry Date
-                                    </th>
-
-                                    <th className="text-center px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Status
-                                    </th>
-
-                                    <th className="text-center px-5 py-4 text-xs font-bold uppercase text-gray-600">
-                                        Actions
-                                    </th>
-
+                                    {[
+                                        "Voucher Number",
+                                        "Student ID",
+                                        "Voucher Type",
+                                        "Assigned Value",
+                                        "Amount Redeemed",
+                                        "Pending Balance",
+                                        "Expiry Date",
+                                        "Status",
+                                        "Actions",
+                                    ].map((heading) => (
+                                        <th
+                                            key={heading}
+                                            className="px-5 py-4 text-left text-xs font-bold uppercase text-gray-600"
+                                        >
+                                            {heading}
+                                        </th>
+                                    ))}
                                 </tr>
-
                             </thead>
 
                             <tbody className="divide-y divide-gray-100">
-
                                 {loading ? (
-
                                     <tr>
-
                                         <td
-                                            colSpan="9"
+                                            colSpan={9}
                                             className="py-16 text-center text-gray-500"
                                         >
-
                                             <RefreshCw
                                                 size={28}
-                                                className="animate-spin mx-auto mb-3"
+                                                className="mx-auto mb-3 animate-spin"
                                             />
-
                                             Loading voucher records...
-
                                         </td>
-
                                     </tr>
-
                                 ) : filteredVouchers.length === 0 ? (
-
                                     <tr>
-
                                         <td
-                                            colSpan="9"
+                                            colSpan={9}
                                             className="py-16 text-center text-gray-500"
                                         >
-
                                             <Ticket
                                                 size={35}
                                                 className="mx-auto mb-3 text-gray-300"
                                             />
-
                                             <p className="font-semibold">
                                                 No voucher records found.
                                             </p>
-
-                                            <p className="text-sm mt-1">
-                                                Try another search or add a new voucher.
+                                            <p className="mt-1 text-sm">
+                                                Try another search or add a new
+                                                voucher.
                                             </p>
-
                                         </td>
-
                                     </tr>
-
                                 ) : (
+                                    filteredVouchers.map((voucher) => {
+                                        const status = getStatus(voucher);
 
-                                    filteredVouchers.map(
-                                        (voucher) => {
+                                        return (
+                                            <tr
+                                                key={voucher.id}
+                                                className="transition hover:bg-blue-50/40"
+                                            >
+                                                <td className="px-5 py-5 font-bold text-[#102d55]">
+                                                    {getVoucherNumber(voucher)}
+                                                </td>
 
-                                            const status =
-                                                getStatus(
-                                                    voucher
-                                                );
-
-                                            return (
-
-                                                <tr
-                                                    key={
-                                                        voucher.id
-                                                    }
-                                                    className="hover:bg-blue-50/40 transition"
-                                                >
-
-                                                    {/* VOUCHER NUMBER */}
-
-                                                    <td className="px-5 py-5">
-
-                                                        <span className="font-bold text-[#102d55]">
-
-                                                            {getVoucherNumber(
+                                                <td className="px-5 py-5">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-cyan-50">
+                                                            <User
+                                                                size={17}
+                                                                className="text-cyan-600"
+                                                            />
+                                                        </div>
+                                                        <span className="font-semibold text-gray-900">
+                                                            {getStudentId(
                                                                 voucher
                                                             )}
-
                                                         </span>
+                                                    </div>
+                                                </td>
 
-                                                    </td>
+                                                <td className="px-5 py-5">
+                                                    <span className="inline-flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
+                                                        <FileText size={14} />
+                                                        {getVoucherType(
+                                                            voucher
+                                                        )}
+                                                    </span>
+                                                </td>
 
-                                                    {/* STUDENT ID */}
+                                                <td className="px-5 py-5 text-right font-semibold">
+                                                    {formatCurrency(
+                                                        getAssignedValue(voucher)
+                                                    )}
+                                                </td>
 
-                                                    <td className="px-5 py-5">
+                                                <td className="px-5 py-5 text-right font-bold text-green-700">
+                                                    {formatCurrency(
+                                                        getAmountRedeemed(voucher)
+                                                    )}
+                                                </td>
 
-                                                        <div className="flex items-center gap-3">
+                                                <td className="px-5 py-5 text-right font-bold text-red-600">
+                                                    {formatCurrency(
+                                                        getRemainingBalance(
+                                                            voucher
+                                                        )
+                                                    )}
+                                                </td>
 
-                                                            <div className="w-9 h-9 rounded-full bg-cyan-50 flex items-center justify-center">
+                                                <td className="px-5 py-5 text-center text-sm text-gray-600">
+                                                    <div className="flex items-center justify-center gap-2">
+                                                        <CalendarDays
+                                                            size={16}
+                                                            className="text-gray-400"
+                                                        />
+                                                        {formatDate(
+                                                            voucher.expiry_date
+                                                        )}
+                                                    </div>
+                                                </td>
 
-                                                                <User
-                                                                    size={17}
-                                                                    className="text-cyan-600"
-                                                                />
+                                                <td className="px-5 py-5 text-center">
+                                                    <span
+                                                        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-bold ${getStatusStyle(status)}`}
+                                                    >
+                                                        {getStatusIcon(status)}
+                                                        {status}
+                                                    </span>
+                                                </td>
 
-                                                            </div>
-
-                                                            <span className="font-semibold text-gray-900">
-
-                                                                {getStudentId(
+                                                <td className="px-5 py-5">
+                                                    <div className="flex flex-col gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                handleReminder(
                                                                     voucher
-                                                                )}
+                                                                )
+                                                            }
+                                                            className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-[#007c8b] hover:text-[#005b66]"
+                                                        >
+                                                            <Bell size={14} />
+                                                            Send Reminder
+                                                        </button>
 
-                                                            </span>
-
-                                                        </div>
-
-                                                    </td>
-
-                                                    {/* TYPE */}
-
-                                                    <td className="px-5 py-5">
-
-                                                        <span className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold">
-
-                                                            <FileText
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                handlePenalty(
+                                                                    voucher
+                                                                )
+                                                            }
+                                                            className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-red-600 hover:text-red-800"
+                                                        >
+                                                            <AlertCircle
                                                                 size={14}
                                                             />
+                                                            Apply Penalty
+                                                        </button>
 
-                                                            {getVoucherType(
-                                                                voucher
-                                                            )}
-
-                                                        </span>
-
-                                                    </td>
-
-                                                    {/* ASSIGNED */}
-
-                                                    <td className="px-5 py-5 text-right font-semibold">
-
-                                                        {formatCurrency(
-                                                            getAssignedValue(
-                                                                voucher
-                                                            )
-                                                        )}
-
-                                                    </td>
-
-                                                    {/* REDEEMED */}
-
-                                                    <td className="px-5 py-5 text-right font-bold text-green-700">
-
-                                                        {formatCurrency(
-                                                            getAmountRedeemed(
-                                                                voucher
-                                                            )
-                                                        )}
-
-                                                    </td>
-
-                                                    {/* BALANCE */}
-
-                                                    <td className="px-5 py-5 text-right font-bold text-red-600">
-
-                                                        {formatCurrency(
-                                                            getRemainingBalance(
-                                                                voucher
-                                                            )
-                                                        )}
-
-                                                    </td>
-
-                                                    {/* EXPIRY */}
-
-                                                    <td className="px-5 py-5 text-center text-sm text-gray-600">
-
-                                                        <div className="flex items-center justify-center gap-2">
-
-                                                            <CalendarDays
-                                                                size={16}
-                                                                className="text-gray-400"
-                                                            />
-
-                                                            {formatDate(
-                                                                voucher.expiry_date
-                                                            )}
-
-                                                        </div>
-
-                                                    </td>
-
-                                                    {/* STATUS */}
-
-                                                    <td className="px-5 py-5 text-center">
-
-                                                        <span
-                                                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold ${getStatusStyle(
-                                                                status
-                                                            )}`}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setSelectedVoucher(
+                                                                    voucher
+                                                                )
+                                                            }
+                                                            className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-gray-600 hover:text-[#102d55]"
                                                         >
-
-                                                            {getStatusIcon(
-                                                                status
-                                                            )}
-
-                                                            {status}
-
-                                                        </span>
-
-                                                    </td>
-
-                                                    {/* ACTIONS */}
-
-                                                    <td className="px-5 py-5">
-
-                                                        <div className="flex flex-col gap-2">
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    handleReminder(
-                                                                        voucher
-                                                                    )
-                                                                }
-                                                                className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-[#007c8b] hover:text-[#005b66]"
-                                                            >
-
-                                                                <Bell
-                                                                    size={14}
-                                                                />
-
-                                                                Send Reminder
-
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    handlePenalty(
-                                                                        voucher
-                                                                    )
-                                                                }
-                                                                className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-red-600 hover:text-red-800"
-                                                            >
-
-                                                                <AlertCircle
-                                                                    size={14}
-                                                                />
-
-                                                                Apply Penalty
-
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    setSelectedVoucher(
-                                                                        voucher
-                                                                    )
-                                                                }
-                                                                className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-gray-600 hover:text-[#102d55]"
-                                                            >
-
-                                                                <Eye
-                                                                    size={14}
-                                                                />
-
-                                                                View
-
-                                                            </button>
-
-                                                        </div>
-
-                                                    </td>
-
-                                                </tr>
-
-                                            );
-                                        }
-                                    )
-
+                                                            <Eye size={14} />
+                                                            View
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
                                 )}
-
                             </tbody>
-
                         </table>
-
                     </div>
+                </section>
 
-                </div>
-
-                {/* =================================================
-                    BOTTOM DASHBOARD CARDS
-                ================================================= */}
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-                    {/* TOTAL */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 min-h-[190px]">
-
-                        <p className="font-bold text-gray-800 text-lg">
+                {/* BOTTOM CARDS */}
+                <section className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+                    <div className="min-h-[190px] rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <p className="text-lg font-bold text-gray-800">
                             Total Uncollected Balances
                         </p>
-
-                        <p className="text-sm text-gray-500 mt-1">
-                            (Vouchers)
+                        <p className="mt-1 text-sm text-gray-500">(Vouchers)</p>
+                        <p className="mt-10 text-4xl font-bold text-[#102d55]">
+                            {formatCurrency(totalUncollected)}
                         </p>
-
-                        <p className="text-4xl font-bold text-[#102d55] mt-10">
-
-                            {formatCurrency(
-                                totalUncollected
-                            )}
-
-                        </p>
-
                     </div>
 
-                    {/* TODAY */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <p className="font-bold text-gray-800 text-lg">
+                    <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <p className="text-lg font-bold text-gray-800">
                             Balances Collection Today
                         </p>
-
-                        <p className="text-3xl font-bold text-[#102d55] mt-7">
-
-                            {formatCurrency(
-                                collectionToday
-                            )}
-
+                        <p className="mt-7 text-3xl font-bold text-[#102d55]">
+                            {formatCurrency(collectionToday)}
                         </p>
 
-                        <div className="mt-5 bg-gray-50 rounded-xl p-4">
-
+                        <div className="mt-5 rounded-xl bg-gray-50 p-4">
                             <p className="font-semibold text-gray-800">
                                 Recent Voucher Actions
                             </p>
-
-                            <p className="text-sm text-gray-600 mt-2">
-
-                                {vouchers.length > 0
-                                    ? `Latest voucher: ${getVoucherNumber(
-                                          vouchers[
-                                              vouchers.length -
-                                                  1
-                                          ]
-                                      )}`
+                            <p className="mt-2 text-sm text-gray-600">
+                                {vouchers.length
+                                    ? `Latest voucher: ${getVoucherNumber(vouchers[vouchers.length - 1])}`
                                     : "No recent voucher actions."}
-
                             </p>
-
                         </div>
-
                     </div>
 
-                    {/* TOOLS */}
-
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-
-                        <p className="font-bold text-gray-800 text-lg mb-5">
+                    <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <p className="mb-5 text-lg font-bold text-gray-800">
                             Voucher Tools
                         </p>
 
                         <div className="space-y-3">
-
                             <button
                                 type="button"
                                 onClick={() =>
                                     alert(
-                                        "Bulk reminder feature selected."
+                                        "Bulk reminder feature selected. No messages have been sent."
                                     )
                                 }
-                                className="w-full inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-4 py-3 rounded-xl font-semibold transition"
+                                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#0797a6] px-4 py-3 font-semibold text-white transition hover:bg-[#067f8b]"
                             >
-
-                                <Bell
-                                    size={18}
-                                />
-
+                                <Bell size={18} />
                                 Bulk Reminders
-
                             </button>
 
                             <button
                                 type="button"
                                 onClick={() =>
                                     alert(
-                                        "Restrict student access feature selected."
+                                        "Student access restriction is a prototype action and has not changed access."
                                     )
                                 }
-                                className="w-full inline-flex items-center justify-center gap-2 border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-3 rounded-xl font-semibold transition"
+                                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-gray-300 px-4 py-3 font-semibold text-gray-700 hover:bg-gray-50"
                             >
-
-                                <Ban
-                                    size={18}
-                                />
-
+                                <Ban size={18} />
                                 Restrict Student Access
-
                             </button>
 
                             <button
                                 type="button"
                                 onClick={() =>
                                     alert(
-                                        "Late penalty feature selected."
+                                        "Late penalty feature selected. No penalty has been applied."
                                     )
                                 }
-                                className="w-full inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-4 py-3 rounded-xl font-semibold transition"
+                                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#0797a6] px-4 py-3 font-semibold text-white transition hover:bg-[#067f8b]"
                             >
-
-                                <AlertCircle
-                                    size={18}
-                                />
-
+                                <AlertCircle size={18} />
                                 Apply Late Penalties
-
                             </button>
-
                         </div>
-
                     </div>
-
-                </div>
-
+                </section>
             </main>
 
-            {/* =================================================
-                ADD VOUCHER MODAL
-            ================================================= */}
-
+            {/* ADD VOUCHER MODAL */}
             {showAddModal && (
-
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-
-                    <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
-
-                        <div className="sticky top-0 z-10 bg-white border-b px-6 py-5 flex items-center justify-between">
-
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                        <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-6 py-5">
                             <div>
-
                                 <p className="text-sm text-gray-500">
                                     Cashier's Unit
                                 </p>
-
                                 <h2 className="text-2xl font-bold text-[#102d55]">
                                     Add Voucher
                                 </h2>
-
                             </div>
 
                             <button
                                 type="button"
-                                onClick={() =>
-                                    setShowAddModal(
-                                        false
-                                    )
-                                }
-                                className="p-2 rounded-lg hover:bg-gray-100"
+                                onClick={closeAddModal}
+                                disabled={saving}
+                                className="rounded-lg p-2 hover:bg-gray-100 disabled:opacity-50"
                             >
-
-                                <X
-                                    size={22}
-                                />
-
+                                <X size={22} />
                             </button>
-
                         </div>
 
                         <form
-                            onSubmit={
-                                handleSubmit
-                            }
-                            className="p-6 space-y-6"
+                            onSubmit={handleSubmit}
+                            className="space-y-6 p-6"
                         >
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-
-                                {/* VOUCHER NUMBER */}
-
+                            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                                 <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
                                         Voucher Number
                                     </label>
-
                                     <input
                                         type="text"
                                         name="voucher_number"
-                                        value={
-                                            form.voucher_number
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="Leave blank to auto-generate"
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        value={form.voucher_number}
+                                        onChange={handleChange}
+                                        placeholder="Leave blank if generated automatically"
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
 
-                                {/* STUDENT ID */}
-
                                 <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Student ID
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
+                                        Student ID *
                                     </label>
-
                                     <input
                                         type="text"
                                         name="student_id"
-                                        value={
-                                            form.student_id
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
+                                        value={form.student_id}
+                                        onChange={handleChange}
                                         placeholder="e.g. 2026-ABRA-001"
                                         required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
 
-                                {/* TYPE */}
-
                                 <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Voucher Type
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
+                                        Voucher Type *
                                     </label>
-
                                     <input
                                         type="text"
                                         name="voucher_type"
-                                        value={
-                                            form.voucher_type
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
+                                        value={form.voucher_type}
+                                        onChange={handleChange}
                                         placeholder="e.g. Academic Scholarship"
                                         required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
 
-                                {/* ASSIGNED */}
-
                                 <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Assigned Value
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
+                                        Assigned Value (PHP) *
                                     </label>
-
                                     <input
                                         type="number"
                                         step="0.01"
                                         min="0"
                                         name="assigned_value"
-                                        value={
-                                            form.assigned_value
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
+                                        value={form.assigned_value}
+                                        onChange={handleChange}
                                         placeholder="0.00"
                                         required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
 
-                                {/* REDEEMED */}
-
                                 <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                        Amount Redeemed
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
+                                        Amount Redeemed (PHP) *
                                     </label>
-
                                     <input
                                         type="number"
                                         step="0.01"
                                         min="0"
                                         name="amount_redeemed"
-                                        value={
-                                            form.amount_redeemed
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        placeholder="0.00"
+                                        value={form.amount_redeemed}
+                                        onChange={handleChange}
                                         required
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
 
-                                {/* EXPIRY */}
-
                                 <div>
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
                                         Expiry Date
                                     </label>
-
                                     <input
                                         type="date"
                                         name="expiry_date"
-                                        value={
-                                            form.expiry_date
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
+                                        value={form.expiry_date}
+                                        onChange={handleChange}
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
-
-                                {/* DESCRIPTION */}
 
                                 <div className="md:col-span-2">
-
-                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                    <label className="mb-2 block text-sm font-semibold text-gray-700">
                                         Description
                                     </label>
-
                                     <textarea
                                         name="description"
-                                        value={
-                                            form.description
-                                        }
-                                        onChange={
-                                            handleChange
-                                        }
-                                        rows="4"
+                                        value={form.description}
+                                        onChange={handleChange}
+                                        rows={4}
                                         placeholder="Additional voucher details..."
-                                        className="w-full border border-gray-300 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6] resize-none"
+                                        className="w-full resize-none rounded-xl border border-gray-300 px-4 py-3 outline-none focus:ring-2 focus:ring-[#0797a6]"
                                     />
-
                                 </div>
-
                             </div>
 
-                            {/* BALANCE */}
-
-                            <div className="bg-[#eef7f8] rounded-xl p-5">
-
-                                <div className="flex items-center justify-between">
-
-                                    <div>
-
-                                        <p className="text-sm text-gray-500">
-                                            Current Pending Balance
-                                        </p>
-
-                                        <p className="text-3xl font-bold text-[#102d55] mt-1">
-
-                                            {formatCurrency(
-                                                Math.max(
-                                                    Number(
-                                                        form.assigned_value ||
-                                                            0
-                                                    ) -
-                                                        Number(
-                                                            form.amount_redeemed ||
-                                                                0
-                                                        ),
-                                                    0
-                                                )
-                                            )}
-
-                                        </p>
-
-                                    </div>
-
-                                    <CreditCard
-                                        size={34}
-                                        className="text-[#0797a6]"
-                                    />
-
-                                </div>
-
+                            <div className="rounded-xl bg-[#eef7f8] p-5">
+                                <p className="text-sm text-gray-500">
+                                    Current Pending Balance
+                                </p>
+                                <p className="mt-1 text-3xl font-bold text-[#102d55]">
+                                    {formatCurrency(
+                                        Math.max(
+                                            Number(form.assigned_value || 0) -
+                                                Number(
+                                                    form.amount_redeemed || 0
+                                                ),
+                                            0
+                                        )
+                                    )}
+                                </p>
                             </div>
 
-                            {/* BUTTONS */}
-
-                            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3">
-
+                            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
                                 <button
                                     type="button"
-                                    onClick={() =>
-                                        setShowAddModal(
-                                            false
-                                        )
-                                    }
-                                    className="px-5 py-3 rounded-xl border border-gray-300 font-semibold hover:bg-gray-50"
+                                    onClick={closeAddModal}
+                                    disabled={saving}
+                                    className="rounded-xl border border-gray-300 px-5 py-3 font-semibold hover:bg-gray-50 disabled:opacity-50"
                                 >
                                     Cancel
                                 </button>
 
                                 <button
                                     type="submit"
-                                    disabled={
-                                        saving
-                                    }
-                                    className="px-6 py-3 rounded-xl bg-[#0797a6] hover:bg-[#067f8b] text-white font-semibold disabled:opacity-50"
+                                    disabled={saving}
+                                    className="rounded-xl bg-[#0797a6] px-6 py-3 font-semibold text-white hover:bg-[#067f8b] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-
-                                    {saving
-                                        ? "Saving..."
-                                        : "Save Voucher"}
-
+                                    {saving ? "Saving..." : "Save Voucher"}
                                 </button>
-
                             </div>
-
                         </form>
-
                     </div>
-
                 </div>
-
             )}
 
-            {/* =================================================
-                VIEW VOUCHER MODAL
-            ================================================= */}
-
+            {/* VIEW VOUCHER MODAL */}
             {selectedVoucher && (
-
-                <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-
-                    <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-
-                        <div className="flex items-center justify-between p-6 border-b">
-
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b p-6">
                             <div>
-
                                 <p className="text-sm text-gray-500">
                                     Voucher Record
                                 </p>
-
                                 <h2 className="text-2xl font-bold text-[#102d55]">
-                                    {getVoucherNumber(
-                                        selectedVoucher
-                                    )}
+                                    {getVoucherNumber(selectedVoucher)}
                                 </h2>
-
                             </div>
 
                             <button
                                 type="button"
-                                onClick={() =>
-                                    setSelectedVoucher(
-                                        null
-                                    )
-                                }
-                                className="p-2 rounded-lg hover:bg-gray-100"
+                                onClick={() => setSelectedVoucher(null)}
+                                className="rounded-lg p-2 hover:bg-gray-100"
                             >
-
-                                <X
-                                    size={22}
-                                />
-
+                                <X size={22} />
                             </button>
-
                         </div>
 
-                        <div className="p-6 space-y-6">
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-
+                        <div className="space-y-6 p-6">
+                            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                                 <div>
-
                                     <p className="text-xs uppercase text-gray-500">
                                         Student ID
                                     </p>
-
-                                    <p className="font-semibold mt-1">
-                                        {getStudentId(
-                                            selectedVoucher
-                                        )}
+                                    <p className="mt-1 font-semibold">
+                                        {getStudentId(selectedVoucher)}
                                     </p>
-
                                 </div>
 
                                 <div>
-
                                     <p className="text-xs uppercase text-gray-500">
                                         Voucher Type
                                     </p>
-
-                                    <p className="font-semibold text-blue-700 mt-1">
-                                        {getVoucherType(
-                                            selectedVoucher
-                                        )}
+                                    <p className="mt-1 font-semibold text-blue-700">
+                                        {getVoucherType(selectedVoucher)}
                                     </p>
-
                                 </div>
 
                                 <div>
-
                                     <p className="text-xs uppercase text-gray-500">
                                         Expiry Date
                                     </p>
-
-                                    <p className="font-semibold mt-1">
+                                    <p className="mt-1 font-semibold">
                                         {formatDate(
                                             selectedVoucher.expiry_date
                                         )}
                                     </p>
-
                                 </div>
 
                                 <div>
-
                                     <p className="text-xs uppercase text-gray-500">
                                         Status
                                     </p>
-
                                     <span
-                                        className={`inline-flex items-center gap-2 px-3 py-2 rounded-full text-xs font-bold mt-1 ${getStatusStyle(
-                                            getStatus(
-                                                selectedVoucher
-                                            )
-                                        )}`}
+                                        className={`mt-1 inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-bold ${getStatusStyle(getStatus(selectedVoucher))}`}
                                     >
-
                                         {getStatusIcon(
-                                            getStatus(
-                                                selectedVoucher
-                                            )
+                                            getStatus(selectedVoucher)
                                         )}
-
-                                        {getStatus(
-                                            selectedVoucher
-                                        )}
-
+                                        {getStatus(selectedVoucher)}
                                     </span>
-
                                 </div>
-
                             </div>
 
-                            {/* MONEY */}
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
-                                <div className="bg-gray-50 rounded-xl p-4">
-
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                                <div className="rounded-xl bg-gray-50 p-4">
                                     <p className="text-xs text-gray-500">
                                         Assigned Value
                                     </p>
-
-                                    <p className="text-lg font-bold mt-1">
+                                    <p className="mt-1 text-lg font-bold">
                                         {formatCurrency(
-                                            getAssignedValue(
-                                                selectedVoucher
-                                            )
+                                            getAssignedValue(selectedVoucher)
                                         )}
                                     </p>
-
                                 </div>
 
-                                <div className="bg-green-50 rounded-xl p-4">
-
+                                <div className="rounded-xl bg-green-50 p-4">
                                     <p className="text-xs text-green-700">
                                         Amount Redeemed
                                     </p>
-
-                                    <p className="text-lg font-bold text-green-700 mt-1">
+                                    <p className="mt-1 text-lg font-bold text-green-700">
                                         {formatCurrency(
-                                            getAmountRedeemed(
-                                                selectedVoucher
-                                            )
+                                            getAmountRedeemed(selectedVoucher)
                                         )}
                                     </p>
-
                                 </div>
 
-                                <div className="bg-red-50 rounded-xl p-4">
-
+                                <div className="rounded-xl bg-red-50 p-4">
                                     <p className="text-xs text-red-700">
                                         Pending Balance
                                     </p>
-
-                                    <p className="text-lg font-bold text-red-700 mt-1">
+                                    <p className="mt-1 text-lg font-bold text-red-700">
                                         {formatCurrency(
                                             getRemainingBalance(
                                                 selectedVoucher
                                             )
                                         )}
                                     </p>
-
                                 </div>
-
                             </div>
-
-                            {/* DESCRIPTION */}
 
                             <div>
-
-                                <p className="text-xs uppercase text-gray-500 mb-2">
+                                <p className="mb-2 text-xs uppercase text-gray-500">
                                     Description
                                 </p>
-
-                                <div className="bg-gray-50 rounded-xl p-4 text-gray-700">
-
+                                <div className="rounded-xl bg-gray-50 p-4 text-gray-700">
                                     {selectedVoucher.description ||
                                         "No description provided."}
-
                                 </div>
-
                             </div>
 
-                            {/* ACTION BUTTONS */}
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                                 <button
                                     type="button"
                                     onClick={() =>
-                                        handleReminder(
-                                            selectedVoucher
-                                        )
+                                        handleReminder(selectedVoucher)
                                     }
-                                    className="inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-4 py-3 rounded-xl font-semibold"
+                                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#0797a6] px-4 py-3 font-semibold text-white hover:bg-[#067f8b]"
                                 >
-
-                                    <Bell
-                                        size={17}
-                                    />
-
+                                    <Bell size={17} />
                                     Send Reminder
-
                                 </button>
 
                                 <button
                                     type="button"
                                     onClick={() =>
-                                        handleFinalNotice(
-                                            selectedVoucher
-                                        )
+                                        handleFinalNotice(selectedVoucher)
                                     }
-                                    className="inline-flex items-center justify-center gap-2 border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-3 rounded-xl font-semibold"
+                                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-gray-300 px-4 py-3 font-semibold text-gray-700 hover:bg-gray-50"
                                 >
-
-                                    <FileText
-                                        size={17}
-                                    />
-
+                                    <FileText size={17} />
                                     Generate Final Notice
-
                                 </button>
 
                                 <button
                                     type="button"
                                     onClick={() =>
-                                        handleRestrictAccess(
-                                            selectedVoucher
-                                        )
+                                        handleRestrictAccess(selectedVoucher)
                                     }
-                                    className="inline-flex items-center justify-center gap-2 border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl font-semibold"
+                                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 font-semibold text-red-700 hover:bg-red-100"
                                 >
-
-                                    <Ban
-                                        size={17}
-                                    />
-
+                                    <Ban size={17} />
                                     Restrict Student Access
-
                                 </button>
 
                                 <button
                                     type="button"
                                     onClick={() =>
-                                        handlePenalty(
-                                            selectedVoucher
-                                        )
+                                        handlePenalty(selectedVoucher)
                                     }
-                                    className="inline-flex items-center justify-center gap-2 bg-[#0797a6] hover:bg-[#067f8b] text-white px-4 py-3 rounded-xl font-semibold"
+                                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#0797a6] px-4 py-3 font-semibold text-white hover:bg-[#067f8b]"
                                 >
-
-                                    <AlertCircle
-                                        size={17}
-                                    />
-
+                                    <AlertCircle size={17} />
                                     Apply Late Penalty
-
                                 </button>
-
                             </div>
-
                         </div>
 
-                        <div className="flex justify-end p-6 border-t">
-
+                        <div className="flex justify-end border-t p-6">
                             <button
                                 type="button"
-                                onClick={() =>
-                                    setSelectedVoucher(
-                                        null
-                                    )
-                                }
-                                className="px-5 py-3 border border-gray-300 rounded-xl font-semibold hover:bg-gray-50"
+                                onClick={() => setSelectedVoucher(null)}
+                                className="rounded-xl border border-gray-300 px-5 py-3 font-semibold hover:bg-gray-50"
                             >
                                 Close
                             </button>
-
                         </div>
-
                     </div>
-
                 </div>
-
             )}
-
         </div>
     );
 }

@@ -2,106 +2,45 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ReceiptController;
 use App\Http\Controllers\Api\VoucherController;
-use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\CollectionController;
 
-use App\Http\Middleware\EnsureSystemAdministrator;
-
 /*
 |--------------------------------------------------------------------------
-| Public Routes
+| UniTeq API Routes
 |--------------------------------------------------------------------------
 */
 
-// Login
+// API status check
+Route::get('/status', function () {
+    return response()->json([
+        'success' => true,
+        'message' => 'UniTeq API is running.',
+    ]);
+});
+
+// Authentication
 Route::post('/login', [AuthController::class, 'login']);
 
-
-/*
-|--------------------------------------------------------------------------
-| Authenticated Routes
-|--------------------------------------------------------------------------
-*/
-
+// Protected routes: require an authenticated user
 Route::middleware('auth:sanctum')->group(function () {
 
-    // Authentication
+    // Account
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
+    // User management
+    Route::apiResource('users', UserController::class);
 
-    /*
-    |--------------------------------------------------------------------------
-    | User Management
-    |--------------------------------------------------------------------------
-    | System Administrator only
-    |--------------------------------------------------------------------------
-    */
-
-    Route::middleware(EnsureSystemAdministrator::class)->group(function () {
-        Route::apiResource('users', UserController::class);
-    });
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Registered Collections
-    |--------------------------------------------------------------------------
-    | Used by Receipts.jsx to select a collection and load its fixed fee.
-    |--------------------------------------------------------------------------
-    */
-
-    Route::apiResource('collections', CollectionController::class);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Receipts and Payments
-    |--------------------------------------------------------------------------
-    */
-
+    // Official receipts
     Route::apiResource('receipts', ReceiptController::class);
 
-    // Outstanding balances
-    Route::get(
-        '/pending-balances',
-        [ReceiptController::class, 'pendingBalances']
-    );
-
-    // Record an additional payment against a receipt
-    Route::post(
-        '/receipts/{receipt}/payment',
-        [ReceiptController::class, 'recordPayment']
-    );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Vouchers
-    |--------------------------------------------------------------------------
-    */
-
+    // Disbursement vouchers
     Route::apiResource('vouchers', VoucherController::class);
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Activity Logs
-    |--------------------------------------------------------------------------
-    */
-
-    Route::get(
-        '/activity-logs',
-        [ActivityLogController::class, 'index']
-    );
-
-    Route::get(
-        '/activity-logs/summary',
-        [ActivityLogController::class, 'summary']
-    );
+    // Collections
+    Route::apiResource('collections', CollectionController::class);
 });

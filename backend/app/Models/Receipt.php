@@ -22,6 +22,8 @@ class Receipt extends Model
         'amount',
         'remaining_balance',
         'payment_method',
+        'cash_received',
+        'change_amount',
     ];
 
     protected $casts = [
@@ -29,5 +31,7 @@ class Receipt extends Model
         'original_amount' => 'decimal:2',
         'amount' => 'decimal:2',
         'remaining_balance' => 'decimal:2',
+        'cash_received' => 'decimal:2',
+        'change_amount' => 'decimal:2',
     ];
 }
