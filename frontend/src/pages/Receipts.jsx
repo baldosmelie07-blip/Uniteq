@@ -18,7 +18,7 @@ import {
     AlertCircle,
 } from "lucide-react";
 
-const API = "https://uniteq-production-zsysbh.laravel.cloud/api";
+const API = "http://127.0.0.1:8000/api";
 
 const inputClass =
     "w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500 disabled:cursor-not-allowed disabled:bg-gray-100";
@@ -283,6 +283,37 @@ function printReceipt(receipt) {
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>Official Receipt</title>
             <style>
+
+                .receipt-header {
+                    text-align:center;
+                    margin-bottom: 20px;
+                }
+
+                .school-logo {
+                    width: 85px;
+                    height: 85px;
+                    object-fit: contain;
+                    display: block;
+                    margin: 0 auto 8px;
+                }
+
+                .receipt-header h2 {
+                    font-size: 18px;
+                    margin: 4px 0;
+                }
+
+                .receipt-header p {
+                    font-size: 12px;
+                    margin: 2px 0;
+                }
+
+                .receipt-header h3 {
+                    font-size: 15px;
+                    margin-top: 12px;
+                    padding-bottom: 8px;
+                    border-bottom: 1px solid black;
+                }
+
                 * { box-sizing: border-box; }
                 body {
                     font-family: Arial, sans-serif;
@@ -373,14 +404,15 @@ function printReceipt(receipt) {
             </style>
         </head>
         <body>
-            <main>
-                <header>
-                    <h1>UNIVERSITY OF ABRA</h1>
-                    <p>Main Campus</p>
-                    <p>Cashier's Unit</p>
-                    <h2>PAYMENT RECEIPT</h2>
-                </header>
+            <div class="receipt-header">
+                <img src="/university-of-abra-logo.png" alt="University Logo" class="school-logo" />
 
+                <h2>UNIVERSITY OF ABRA<h2>
+                <p>Main Campus - Lagangilang, Abra</p>
+                <p>CASHIER'S UNIT</p>
+                <h3>OFFICIAL PAYMENT RECEIPT</h3>
+            </div>    
+            <main>
                 <div class="number">
                     Receipt No.: ${escapeHtml(receiptNumber(receipt))}
                 </div>
@@ -529,6 +561,8 @@ export default function Receipts() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [search, setSearch] = useState("");
+    const [currentPage, setCurrentPage] = useState(1);
+    const recordsPerPage = 5;
     const [pageError, setPageError] = useState("");
     const [showForm, setShowForm] = useState(false);
     const [editingReceipt, setEditingReceipt] = useState(null);
@@ -904,14 +938,31 @@ export default function Receipts() {
 
                 return searchableText.includes(query);
             })
-            .sort((a, b) => {
-                const dateComparison = String(b.date || "").localeCompare(
-                    String(a.date || "")
-                );
+           .sort((a, b) => {
+            const receiptA = String(receiptNumber(a) ?? "");
+            const receiptB = String(receiptNumber(b) ?? "");
 
-                return dateComparison || numberValue(b.id) - numberValue(a.id);
+            return receiptA.localeCompare(receiptB, undefined, {
+                numeric: true,
+                sensitivity: "base",
             });
+           });
     }, [receipts, search]);
+
+    // RECEIPT PAGINATION
+    const recordPerPage = 5;
+
+    const totalPages = Math.ceil(
+        filteredReceipts.length / recordsPerPage
+    );
+
+    const indexOfLastRecord = currentPage * recordsPerPage;
+    const indexOfFirstPage = indexOfLastRecord - recordsPerPage;
+
+    const paginatedReceipts = filteredReceipts.slice(
+        indexOfFirstPage,
+        indexOfLastRecord
+    );
 
     const totalCollected = useMemo(
         () =>
@@ -1188,7 +1239,7 @@ export default function Receipts() {
                                         </td>
                                     </tr>
                                 ) : (
-                                    filteredReceipts.map((receipt) => (
+                                    paginatedReceipts.map((receipt) => (
                                         <tr
                                             key={receipt.id}
                                             className="transition hover:bg-gray-50"
@@ -1294,6 +1345,41 @@ export default function Receipts() {
                                 )}
                             </tbody>
                         </table>
+
+                        {/* RECEIPT PAGINATION */}
+                        <div className="flex flex-col sm:flex-row justify-between items-center gap-3 mt-5 border-t pt-4">
+
+                            <p className="text-sm text-gray-600">
+                                Showing{" "}
+                                {filteredReceipts.length === 0 ? 0 : indexOfFirstPage + 1}
+                                {" - "}
+                                {Math.min(indexOfLastRecord, filteredReceipts.length)}
+                                {" of "}
+                                {filteredReceipts.length} receipts
+                            </p>
+
+                            <div className="flex items-center gap-2">
+
+                                <button
+                                    type="button"
+                                    onClick={() => setCurrentPage(currentPage - 1)}
+                                    disabled={currentPage === 1}
+                                    className="px-4 py-2 border rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100">
+                                        Previous
+                                    </button>
+
+                                    <span className="text-sm font-medium text-gray-700">
+                                        Page {currentPage} of {Math.max(totalPages, 1)}
+                                    </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setCurrentPage(currentPage + 1)}
+                                    disabled={currentPage >= totalPages}
+                                    className="px-4 py-2 border rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100">
+                                        Next
+                                    </button>
+                            </div>
+                        </div>
                     </div>
 
                     <div className="border-t border-gray-200 px-6 py-4 text-sm text-gray-500">

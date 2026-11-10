@@ -10,6 +10,7 @@ import axios from "axios";
 
 import {
     LayoutDashboard,
+    History as HistoryIcon,
     Receipt,
     Wallet,
     FileCheck,
@@ -63,6 +64,12 @@ const navigation = [
         name: "Reports",
         path: "/reports",
         icon: FileText,
+    },
+    {
+        name: "Audit Trail",
+        path: "/audit-trail",
+        icon: HistoryIcon,
+        roles: ["System Administrator"],
     },
 ];
 
@@ -128,18 +135,22 @@ export default function MainLayout() {
     const pageTitle = getPageTitle(location.pathname);
 
     const visibleNavigation = useMemo(() => {
-        const items = [...navigation];
+    const items = navigation.filter((item) => {
+        if (!item.roles) return true;
 
-        if (isAdmin) {
-            items.push({
-                name: "User Management",
-                path: "/users",
-                icon: Users,
-            });
-        }
+        return item.roles.includes(user?.role);
+    });
 
-        return items;
-    }, [isAdmin]);
+    if (isAdmin) {
+        items.push({
+            name: "User Management",
+            path: "/users",
+            icon: Users,
+        });
+    }
+
+    return items;
+}, [isAdmin, user?.role]);
 
     const filteredNavigation = useMemo(() => {
         const query = searchTerm.trim().toLowerCase();

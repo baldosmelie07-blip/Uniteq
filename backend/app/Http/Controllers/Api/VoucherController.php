@@ -5,12 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Voucher;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class VoucherController extends Controller
 {
-    /**
-     * Display all vouchers.
-     */
     public function index()
     {
         return response()->json(
@@ -18,13 +16,10 @@ class VoucherController extends Controller
         );
     }
 
-    /**
-     * Store a new voucher.
-     */
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'voucherNumber' => 'required|string|unique:vouchers,voucher_number',
+            'voucherNumber' => 'required|string|max:255|unique:vouchers,voucher_number',
             'date' => 'required|date',
             'payee' => 'required|string|max:255',
             'address' => 'nullable|string|max:255',
@@ -36,46 +31,44 @@ class VoucherController extends Controller
             'checkedBy' => 'nullable|string|max:255',
             'approvedBy' => 'nullable|string|max:255',
             'receivedBy' => 'nullable|string|max:255',
-            'status' => 'nullable|string|max:50',
+            'dateReceived' => 'nullable|date',
+            'dateReleased' => 'nullable|date',
+            'paymentMethod' => 'nullable|string|max:100',
+            'referenceNumber' => 'nullable|string|max:255',
+            'remarks' => 'nullable|string',
+            'status' => [
+                'required',
+                Rule::in([
+                    'Received from Accounting',
+                    'For Payment',
+                    'Released',
+                    'Cancelled',
+                ]),
+            ],
         ]);
 
-        $voucher = Voucher::create([
-            'voucher_number' => $validated['voucherNumber'],
-            'date' => $validated['date'],
-            'payee' => $validated['payee'],
-            'address' => $validated['address'] ?? null,
-            'office' => $validated['office'] ?? null,
-            'purpose' => $validated['purpose'],
-            'amount' => $validated['amount'],
-            'amount_words' => $validated['amountWords'] ?? null,
-            'prepared_by' => $validated['preparedBy'] ?? null,
-            'checked_by' => $validated['checkedBy'] ?? null,
-            'approved_by' => $validated['approvedBy'] ?? null,
-            'received_by' => $validated['receivedBy'] ?? null,
-            'status' => $validated['status'] ?? 'Pending',
-        ]);
+        $voucher = Voucher::create($this->mapVoucherData($validated));
 
         return response()->json([
-            'message' => 'Voucher created successfully.',
+            'message' => 'Disbursement record created successfully.',
             'voucher' => $voucher,
         ], 201);
     }
 
-    /**
-     * Display one voucher.
-     */
     public function show(Voucher $voucher)
     {
         return response()->json($voucher);
     }
 
-    /**
-     * Update a voucher.
-     */
     public function update(Request $request, Voucher $voucher)
     {
         $validated = $request->validate([
-            'voucherNumber' => 'required|string|unique:vouchers,voucher_number,' . $voucher->id,
+            'voucherNumber' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('vouchers', 'voucher_number')->ignore($voucher->id),
+            ],
             'date' => 'required|date',
             'payee' => 'required|string|max:255',
             'address' => 'nullable|string|max:255',
@@ -87,40 +80,60 @@ class VoucherController extends Controller
             'checkedBy' => 'nullable|string|max:255',
             'approvedBy' => 'nullable|string|max:255',
             'receivedBy' => 'nullable|string|max:255',
-            'status' => 'nullable|string|max:50',
+            'dateReceived' => 'nullable|date',
+            'dateReleased' => 'nullable|date',
+            'paymentMethod' => 'nullable|string|max:100',
+            'referenceNumber' => 'nullable|string|max:255',
+            'remarks' => 'nullable|string',
+            'status' => [
+                'required',
+                Rule::in([
+                    'Received from Accounting',
+                    'For Payment',
+                    'Released',
+                    'Cancelled',
+                ]),
+            ],
         ]);
 
-        $voucher->update([
-            'voucher_number' => $validated['voucherNumber'],
-            'date' => $validated['date'],
-            'payee' => $validated['payee'],
-            'address' => $validated['address'] ?? null,
-            'office' => $validated['office'] ?? null,
-            'purpose' => $validated['purpose'],
-            'amount' => $validated['amount'],
-            'amount_words' => $validated['amountWords'] ?? null,
-            'prepared_by' => $validated['preparedBy'] ?? null,
-            'checked_by' => $validated['checkedBy'] ?? null,
-            'approved_by' => $validated['approvedBy'] ?? null,
-            'received_by' => $validated['receivedBy'] ?? null,
-            'status' => $validated['status'] ?? 'Pending',
-        ]);
+        $voucher->update($this->mapVoucherData($validated));
 
         return response()->json([
-            'message' => 'Voucher updated successfully.',
-            'voucher' => $voucher,
+            'message' => 'Disbursement record updated successfully.',
+            'voucher' => $voucher->fresh(),
         ]);
     }
 
-    /**
-     * Delete a voucher.
-     */
     public function destroy(Voucher $voucher)
     {
         $voucher->delete();
 
         return response()->json([
-            'message' => 'Voucher deleted successfully.',
+            'message' => 'Disbursement record deleted successfully.',
         ]);
+    }
+
+    private function mapVoucherData(array $data): array
+    {
+        return [
+            'voucher_number' => $data['voucherNumber'],
+            'date' => $data['date'],
+            'payee' => $data['payee'],
+            'address' => $data['address'] ?? null,
+            'office' => $data['office'] ?? null,
+            'purpose' => $data['purpose'],
+            'amount' => $data['amount'],
+            'amount_words' => $data['amountWords'] ?? null,
+            'prepared_by' => $data['preparedBy'] ?? null,
+            'checked_by' => $data['checkedBy'] ?? null,
+            'approved_by' => $data['approvedBy'] ?? null,
+            'received_by' => $data['receivedBy'] ?? null,
+            'date_received' => $data['dateReceived'] ?? null,
+            'date_released' => $data['dateReleased'] ?? null,
+            'payment_method' => $data['paymentMethod'] ?? null,
+            'reference_number' => $data['referenceNumber'] ?? null,
+            'remarks' => $data['remarks'] ?? null,
+            'status' => $data['status'],
+        ];
     }
 }

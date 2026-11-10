@@ -1,3 +1,4 @@
+
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import Login from "./pages/Login";
@@ -10,25 +11,20 @@ import Vouchers from "./pages/Vouchers";
 import Reports from "./pages/Reports";
 import PendingBalances from "./pages/PendingBalances";
 import Users from "./pages/Users";
+import AuditTrail from "./pages/AuditTrail";
 
 export default function App() {
     return (
         <BrowserRouter>
             <Routes>
 
-                {/* =====================================================
-                    LOGIN
-                ===================================================== */}
-
+                {/* LOGIN */}
                 <Route
                     path="/"
                     element={<Login />}
                 />
 
-                {/* =====================================================
-                    PROTECTED SYSTEM
-                ===================================================== */}
-
+                {/* PROTECTED SYSTEM */}
                 <Route element={<MainLayout />}>
 
                     <Route
@@ -66,20 +62,18 @@ export default function App() {
                         element={<Users />}
                     />
 
+                    {/* AUDIT TRAIL */}
+                    <Route
+                        path="/audit-trail"
+                        element={<AuditTrail />}
+                    />
+
                 </Route>
 
-                {/* =====================================================
-                    UNKNOWN PAGE
-                ===================================================== */}
-
+                {/* UNKNOWN PAGE */}
                 <Route
                     path="*"
-                    element={
-                        <Navigate
-                            to="/"
-                            replace
-                        />
-                    }
+                    element={<Navigate to="/" replace />}
                 />
 
             </Routes>

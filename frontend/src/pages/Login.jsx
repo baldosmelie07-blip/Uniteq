@@ -8,7 +8,10 @@ import {
     EyeOff,
 } from "lucide-react";
 
-const API_URL = "https://uniteq-production-zsysbh.laravel.cloud/api";
+const API_URL = (
+    import.meta.env.VITE_API_URL ||
+    "https://uniteq-production-zsysbh.laravel.cloud/api"
+).replace(/\/+$/, "");
 
 const ALLOWED_ROLES = [
     "System Administrator",

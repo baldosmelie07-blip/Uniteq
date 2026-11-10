@@ -17,14 +17,13 @@ return Application::configure(
     )
     ->withMiddleware(function (Middleware $middleware): void {
 
-        /*
-        |--------------------------------------------------------------------------
-        | API Middleware
-        |--------------------------------------------------------------------------
-        */
-
-        $middleware->statefulApi();
-
+    /*
+    |--------------------------------------------------------------------------------
+    | API Middleware
+    |--------------------------------------------------------------------------------
+    */
+    // UniTeq uses Bearer token authentication.
+    // No stateful SPA cookie authentication is needed.
     })
     ->withExceptions(function (Exceptions $exceptions): void {
 
